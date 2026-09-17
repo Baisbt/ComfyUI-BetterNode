@@ -2,8 +2,9 @@
  * ComfyUI-BetterNode 逻辑回归测试
  *
  * 用途：在不启动 ComfyUI 的前提下，用桩对象验证插件的核心逻辑。
- * 覆盖：菜单结构(FR-1/FR-2)、入参节点创建与复用(FR-4/FR-5)、
- *       置灰判定(FR-7/§6.1)、扩展链式挂载与其他扩展共存(§5.1)
+ * 覆盖：菜单结构(FR-1/FR-2)、入参节点创建与复用(FR-4/FR-5)、参数状态(FR-6)、
+ *       校验与提示(FR-7)、起线降级(FR-3a/FR-3b)、置灰判定(§6.1)、
+ *       扩展链式挂载与其他扩展共存(§5.1)、中英双语(§5.9)
  *
  * 运行：node tests/run.mjs
  *
@@ -33,7 +34,16 @@ fs.mkdirSync(pluginLink, { recursive: true });
 
 fs.writeFileSync(
   path.join(sandbox, 'scripts', 'app.js'),
-  'export const app = { graph: null, canvas: null, ui: { dialog: null }, registerExtension() {} };\n',
+  [
+    'export const app = {',
+    '  graph: null,',
+    '  canvas: null,',
+    '  ui: { dialog: null, settings: null },',
+    '  extensionManager: null,',
+    '  registerExtension() {},',
+    '};',
+    '',
+  ].join('\n'),
   'utf8'
 );
 fs.cpSync(webDir, pluginLink, { recursive: true });
@@ -61,31 +71,69 @@ const graph = {
   getLink(id) { return this.links[id]; },
 };
 
-const canvas = { graph, showConnectionMenu() {}, setDirty() {} };
+let lastContextMenuEvent = null;
+const canvas = {
+  graph,
+  showConnectionMenu() { lastContextMenuEvent = 'source-menu'; },
+  setDirty() {},
+};
 app.graph = graph;
 app.canvas = canvas;
 
+/** 捕获警告/错误提示（走 toast 通道） */
+const toasts = [];
+app.extensionManager = { toast: { add: (options) => toasts.push(options) } };
+const lastToast = () => toasts[toasts.length - 1]?.detail ?? '';
+
 let linkSeq = 1000;
+const STANDARD_WIDGET_TYPES = ['INT', 'FLOAT', 'STRING', 'BOOLEAN', 'COMBO'];
+
 globalThis.window = {
+  comfyAPI: {
+    widgets: { isValidWidgetType: (type) => STANDARD_WIDGET_TYPES.includes(type) },
+  },
   LiteGraph: {
     NODE_TITLE_HEIGHT: 30,
+    registered_node_types: { PrimitiveNode: {} },
     createNode(type) {
-      return {
+      const node = {
         type,
         title: '',
         pos: [0, 0],
         size: [190, 80],
         properties: {},
         outputs: [{ links: [], type: '*', name: 'connect to widget input' }],
+        // 测试钩子：模拟 PrimitiveNode 的合并校验行为
+        __rejectConnect: false,
+        __clampTo: undefined,
         connect(outSlot, targetNode, targetSlot) {
+          if (this.__rejectConnect) return null;
+
+          if (this.__clampTo !== undefined) {
+            const slotName = targetNode.inputs[targetSlot]?.name;
+            const widget = targetNode.widgets.find((w) => w.name === slotName);
+            if (widget) widget.value = this.__clampTo;
+          }
+
           const link = { id: (linkSeq += 1), target_id: targetNode.id, target_slot: targetSlot };
           graph.links[link.id] = link;
           this.outputs[0].links.push(link.id);
           return link;
         },
       };
+      return node;
     },
   },
+};
+
+globalThis.LiteGraph = globalThis.window.LiteGraph;
+
+// Node 环境没有 MouseEvent，补一个最小实现（浏览器中由环境提供）
+globalThis.MouseEvent = class MouseEvent {
+  constructor(type, init = {}) {
+    Object.assign(this, init);
+    this.type = type;
+  }
 };
 
 /** 构造与真实 KSampler 结构一致的节点 */
@@ -129,11 +177,26 @@ function makeKSampler(id, seedValue) {
 }
 
 const { buildInputParamsMenu } = await importSandbox('extensions/ComfyUI-BetterNode/menu/buildMenu.js');
+const { t, getLang, resetLang } = await importSandbox('extensions/ComfyUI-BetterNode/i18n/index.js');
+const { startLinkDrag } = await importSandbox('extensions/ComfyUI-BetterNode/actions/startLinkDrag.js');
 
 const openMenu = (node) => {
   const options = [];
   buildInputParamsMenu(node, canvas, options);
   return options;
+};
+
+const subItems = (node) => openMenu(node)[0]?.submenu?.options ?? [];
+const findItem = (node, prefix) => {
+  const item = subItems(node).find((i) => i.content.startsWith(prefix));
+  assert.ok(item, `找不到条目 ${prefix}`);
+  return item;
+};
+const clickItem = (node, prefix) => {
+  const item = findItem(node, prefix);
+  assert.equal(item.disabled, false, `条目 ${prefix} 不应被置灰`);
+  item.callback();
+  return item;
 };
 
 // ---------------------------------------------------------------- 1. 菜单结构
@@ -159,23 +222,16 @@ assert.equal(labels.filter((l) => l.includes('（可连线）')).length, 4, 'mod
 assert.equal(labels.filter((l) => l.includes('（内部参数）')).length, 6, 'seed/steps/cfg/sampler_name/scheduler/denoise');
 ok('分类正确：4 可连线 + 6 内部参数');
 
-const click = (options, prefix) => {
-  const item = options[0].submenu.options.find((i) => i.content.startsWith(prefix));
-  assert.ok(item, `找不到条目 ${prefix}`);
-  assert.ok(!item.disabled, `条目 ${prefix} 不应被置灰`);
-  item.callback();
-  return item;
-};
-
 // ---------------------------------------------------------------- 2. 入参节点
 
 console.log('\n[2] 内部参数 -> 入参节点（FR-4）');
 
-click(opts, '种子');
+clickItem(ks1, '种子');
 const created = graph.nodes.filter((n) => n.type === 'PrimitiveNode');
 assert.equal(created.length, 1, '应创建 1 个入参节点');
 assert.equal(created[0].title, '入参·seed');
 assert.equal(created[0].properties.betterNode.param, 'seed');
+assert.equal(created[0].properties.betterNode.owner, undefined, '首次创建应为共享节点');
 assert.equal(created[0].outputs[0].links.length, 1, '应建立 1 条连线');
 
 const link1 = graph.links[created[0].outputs[0].links[0]];
@@ -185,47 +241,126 @@ ok('点击「种子」创建入参节点并连到 seed 槽（下标 1）');
 
 // ---------------------------------------------------------------- 3. 复用
 
-console.log('\n[3] 重复点击同一参数 -> 复用（FR-5）');
+console.log('\n[3] 重复点击同一参数 / 另一同类节点 -> 复用（FR-5）');
 
-click(opts, '种子');
+clickItem(ks1, '种子');
 assert.equal(graph.nodes.filter((n) => n.type === 'PrimitiveNode').length, 1, '不应重复创建');
-ok('重复点击不重复创建节点');
-
-// ---------------------------------------------------------------- 4. 一对多
-
-console.log('\n[4] 另一同类节点同参数 -> 复用并追加连线（FR-5）');
+ok('同一节点重复点击不重复创建');
 
 const ks2 = makeKSampler(2, 999);
-click(openMenu(ks2), '种子');
+clickItem(ks2, '种子');
 
-assert.equal(graph.nodes.filter((n) => n.type === 'PrimitiveNode').length, 1, '仍只有 1 个入参节点');
 const primitive = graph.nodes.find((n) => n.type === 'PrimitiveNode');
+assert.equal(graph.nodes.filter((n) => n.type === 'PrimitiveNode').length, 1, '仍只有 1 个入参节点');
 assert.equal(primitive.outputs[0].links.length, 2, '入参节点应连到 2 个目标');
 ok('一个入参节点成功连接两个同类节点');
 
-// ---------------------------------------------------------------- 5. 置灰判定
+// ---------------------------------------------------------------- 4. 状态标识
 
-console.log('\n[5] 不可用项的置灰（FR-7 / DESIGN §6.1）');
+console.log('\n[4] 参数状态反馈（FR-6）');
 
-const lockedNode = makeKSampler(3, 1);
+assert.ok(findItem(ks1, '种子').content.includes('已外置'), findItem(ks1, '种子').content);
+ok('已连接的目标显示「已外置」');
+
+const ks3 = makeKSampler(3, 7);
+assert.ok(findItem(ks3, '种子').content.includes('可复用'), findItem(ks3, '种子').content);
+assert.ok(findItem(ks3, '步数').content.includes('（内部参数）'), findItem(ks3, '步数').content);
+ok('未连接的目标显示「可复用」，无入参节点则不带状态');
+
+const connectedLinkNode = makeKSampler(4, 7);
+connectedLinkNode.inputs[0].link = 999; // 模拟 model 槽已被连线
+assert.ok(findItem(connectedLinkNode, 'model').content.includes('已连线'), findItem(connectedLinkNode, 'model').content);
+ok('已连线的可连线参数显示「已连线」');
+
+// ---------------------------------------------------------------- 5. 提示级校验
+
+console.log('\n[5] 校验与提示（FR-7 提示级）');
+
+toasts.length = 0;
+// 先造出共享的 steps 入参节点，再模拟「与它不兼容」
+clickItem(ks1, '步数');
+const sharedSteps = graph.nodes.find(
+  (n) => n.type === 'PrimitiveNode' && n.properties.betterNode.param === 'steps'
+);
+assert.ok(sharedSteps, '应存在共享的 steps 入参节点');
+sharedSteps.__rejectConnect = true;
+
+clickItem(ks3, '步数');
+
+assert.ok(toasts.length >= 1, '合并被拒应有提示');
+assert.ok(lastToast().includes('不兼容'), lastToast());
+console.log(`      ${lastToast()}`);
+
+const dedicated = graph.nodes.filter((n) => n.type === 'PrimitiveNode' && n.properties.betterNode.param === 'steps');
+assert.equal(dedicated.length, 2, '应新增 1 个专用入参节点（共 2 个）');
+assert.equal(dedicated[0].properties.betterNode.owner, undefined, '原节点仍为共享节点');
+assert.equal(dedicated[1].properties.betterNode.owner, ks3.id, '专用节点应记录 owner');
+sharedSteps.__rejectConnect = false;
+ok('合并被拒 -> 新建专用节点并说明原因');
+
+// 专用节点存在后，再次点击应直接命中共用（不再重试合并、不再产生新节点）
+toasts.length = 0;
+clickItem(ks3, '步数');
+assert.equal(
+  graph.nodes.filter((n) => n.type === 'PrimitiveNode' && n.properties.betterNode.param === 'steps').length,
+  2,
+  '不得因重复点击而膨胀节点'
+);
+assert.equal(toasts.length, 0, '不应重复告警');
+ok('专用节点建立后重复点击保持稳定（不膨胀、不重复告警）');
+
+toasts.length = 0;
+const ks5 = makeKSampler(5, 7);
+const seedNode = graph.nodes.find((n) => n.type === 'PrimitiveNode' && n.properties.betterNode.param === 'seed');
+seedNode.__clampTo = 111;
+clickItem(ks5, '种子');
+
+assert.ok(toasts.length >= 1, '值被钳制应有提示');
+assert.ok(lastToast().includes('收敛'), lastToast());
+assert.ok(lastToast().includes('111'), lastToast());
+console.log(`      ${lastToast()}`);
+seedNode.__clampTo = undefined;
+ok('值被钳制 -> 提示原因与调整前后取值');
+
+// ---------------------------------------------------------------- 6. 置灰判定
+
+console.log('\n[6] 不可用项的置灰（FR-7 阻断级 / DESIGN §6.1）');
+
+const lockedNode = makeKSampler(6, 1);
 lockedNode.inputs[1].locked = true;
-const lockedItem = openMenu(lockedNode)[0].submenu.options.find((i) => i.content.startsWith('种子'));
+const lockedItem = findItem(lockedNode, '种子');
 assert.equal(lockedItem.disabled, true);
 assert.ok(lockedItem.content.includes('不可用'));
 console.log(`      ${lockedItem.content}`);
 ok('锁定槽被置灰并给出原因');
 
+const exoticNode = {
+  id: 7,
+  graph,
+  isVirtualNode: false,
+  isSubgraphNode: () => false,
+  inputs: [{ name: 'curve', type: 'CURVE', widget: { name: 'curve' } }],
+  widgets: [{ name: 'curve', label: '曲线', value: 'x' }],
+};
+const exoticItem = findItem(exoticNode, '曲线');
+assert.equal(exoticItem.disabled, true);
+console.log(`      ${exoticItem.content}`);
+ok('自定义 widget 类型被置灰并给出原因');
+
 assert.equal(openMenu({ id: 9, graph, isVirtualNode: true, inputs: [], widgets: [] }).length, 0);
 ok('虚拟节点不注入菜单');
 
-const subgraphItem = openMenu({
-  id: 10,
-  graph,
-  isVirtualNode: false,
-  isSubgraphNode: () => true,
-  inputs: [{ name: 'x', type: 'INT', widget: { name: 'x' } }],
-  widgets: [{ name: 'x', label: 'x', value: 1 }],
-})[0].submenu.options[0];
+const subgraphItem = findItem(
+  {
+    id: 10,
+    graph,
+    isVirtualNode: false,
+    isSubgraphNode: () => true,
+    inputs: [{ name: 'x', type: 'INT', widget: { name: 'x' } }],
+    widgets: [{ name: 'x', label: 'x', value: 1 }],
+  },
+  'x'
+);
 assert.equal(subgraphItem.disabled, true);
 assert.ok(subgraphItem.content.includes('子图'));
 console.log(`      ${subgraphItem.content}`);
@@ -237,9 +372,91 @@ assert.equal(
 );
 ok('无参数节点不注入菜单');
 
-// ---------------------------------------------------------------- 6. 扩展挂载
+// ---------------------------------------------------------------- 7. 起线降级
 
-console.log('\n[6] 扩展入口：链式挂载与其他扩展共存（§5.1）');
+console.log('\n[7] 可连线参数：FR-3a 与降级（FR-3a / FR-3b）');
+
+let dragCalls = 0;
+canvas.linkConnector = {
+  isConnecting: false,
+  dragNewFromInput(targetGraph, node, input) {
+    dragCalls += 1;
+    assert.equal(targetGraph, graph);
+    assert.equal(input, node.inputs[0]);
+  },
+  reset() {},
+  dropLinks() {},
+};
+canvas.pointer = {};
+canvas._linkConnectorDrop = () => { dragCalls += 10; };
+
+const dragNode = makeKSampler(12, 1);
+dragCalls = 0;
+clickItem(dragNode, 'model');
+assert.equal(dragCalls, 11, '应调用 dragNewFromInput 并注册落点钩子');
+ok('FR-3a：可连线参数点击后进入起线拖拽态');
+
+canvas.linkConnector.isConnecting = true;
+dragCalls = 0;
+toasts.length = 0;
+clickItem(dragNode, 'model');
+assert.equal(dragCalls, 0, '已在连线中时不得再次起线');
+assert.ok(lastToast().includes('已有连线正在进行'), lastToast());
+console.log(`      ${lastToast()}`);
+ok('FR-7 阻断级：已有连线进行中时中止并说明');
+
+canvas.linkConnector.isConnecting = false;
+canvas._linkConnectorDrop = undefined; // 触发手动注册分支
+dragCalls = 0;
+clickItem(dragNode, 'model');
+assert.equal(dragCalls, 1, '缺少 _linkConnectorDrop 时应回退到手动注册');
+ok('FR-3a：缺少原生落点钩子时回退手动注册');
+
+canvas.linkConnector = undefined; // FR-3a 整体不可用 -> 回退 FR-3b
+lastContextMenuEvent = null;
+clickItem(dragNode, 'model');
+assert.equal(lastContextMenuEvent, 'source-menu', '应回退到来源选择菜单');
+ok('FR-3a 不可用时回退 FR-3b 来源菜单');
+
+// ---------------------------------------------------------------- 8. 中英双语
+
+console.log('\n[8] 中英双语（FR-7 / §5.9）');
+
+assert.equal(getLang(), 'zh', '默认应为中文');
+resetLang();
+
+app.ui.settings = { getSettingValue: (id) => (id === 'Comfy.Locale' ? 'en-US' : undefined) };
+resetLang();
+const enOpts = openMenu(makeKSampler(13, 1));
+assert.equal(enOpts[0].content, 'Input Parameters');
+assert.equal(getLang(), 'en');
+const enLabels = enOpts[0].submenu.options.map((i) => i.content);
+console.log(`      ${enLabels.join(' | ')}`);
+assert.ok(enLabels.some((l) => l.includes('Linkable')), enLabels.join('|'));
+assert.ok(enLabels.some((l) => l.includes('Internal')), enLabels.join('|'));
+ok('切换到英文后菜单文案全部变为英文');
+
+app.ui.settings = { getSettingValue: () => 'zh-CN' };
+resetLang();
+assert.equal(openMenu(makeKSampler(14, 1))[0].content, '输入参数', '切回中文应生效');
+ok('语言切换即时生效（每次打开菜单重读）');
+
+// 字典键集合一致性
+const { zh } = await importSandbox('extensions/ComfyUI-BetterNode/i18n/zh.js');
+const { en } = await importSandbox('extensions/ComfyUI-BetterNode/i18n/en.js');
+const zhKeys = Object.keys(zh).sort();
+const enKeys = Object.keys(en).sort();
+assert.deepEqual(zhKeys, enKeys, '中英字典键集合必须一致');
+assert.ok(zhKeys.length >= 30, `字典键数量偏少：${zhKeys.length}`);
+ok(`中英字典键集合一致（${zhKeys.length} 项）`);
+
+// 缺键回退
+assert.equal(t('不存在的键'), '不存在的键');
+ok('缺键时回退键名本身，不抛错');
+
+// ---------------------------------------------------------------- 9. 扩展挂载
+
+console.log('\n[9] 扩展入口：链式挂载与其他扩展共存（§5.1）');
 
 let registered = null;
 app.registerExtension = (ext) => { registered = ext; };
@@ -278,7 +495,6 @@ assert.ok(contents.includes('其他扩展的条目'), '其他扩展条目不得�
 assert.ok(contents.includes('输入参数'), '本插件条目应已注入');
 ok('核心条目、其他扩展条目、本插件条目三者共存');
 
-// 本插件内部异常必须被隔离
 const brokenNode = {
   id: 21,
   graph,
@@ -295,7 +511,6 @@ try {
 assert.equal(threw, false, '本插件内部异常不得向外抛出');
 ok('内部异常被隔离，不影响核心与其他扩展');
 
-// 无前置钩子 + options 非数组
 const bareNodeType = function BareNode() {};
 await registered.beforeRegisterNodeDef(bareNodeType);
 
@@ -309,6 +524,10 @@ try {
 }
 assert.ok(safe);
 ok('options 非数组、无前置钩子时安全退出');
+
+// startLinkDrag 直调防御
+assert.equal(startLinkDrag(dragNode, 0).ok, false, '无 linkConnector 时应安全失败');
+ok('startLinkDrag 在能力缺失时安全失败');
 
 // ---------------------------------------------------------------- 收尾
 

@@ -59,21 +59,24 @@ ComfyUI-BetterNode/
 ├── web/
 │   ├── betterNode.js        # 扩展入口：app.registerExtension + 生命周期
 │   ├── menu/
-│   │   ├── buildMenu.js     # 构建「输入参数」二级菜单条目
-│   │   └── labels.js        # 文案键（对接 i18n）
+│   │   └── buildMenu.js     # 构建「输入参数」二级菜单；文案/状态/点击分发
 │   ├── params/
 │   │   ├── enumerate.js     # 参数枚举、分类、当前值/选项读取
-│   │   └── guards.js        # 支持范围判定（节点/参数可用性 + 置灰原因）
+│   │   └── guards.js        # 支持范围判定（返回原因键，文案由 i18n 解析）
 │   ├── actions/
 │   │   ├── startLinkDrag.js # FR-3a 起线拖拽态
 │   │   ├── showSourceMenu.js# FR-3b 选择来源节点
-│   │   └── createInputNode.js # FR-4/FR-5/FR-8 入参节点工厂、复用索引、随机化补齐
+│   │   └── createInputNode.js # FR-4/FR-5/FR-6 入参节点工厂、复用索引、状态查询
 │   ├── i18n/
-│   │   ├── index.js         # 语言判定（读前端语言设置）+ 文案查表
+│   │   ├── index.js         # 语言判定（读 Comfy.Locale）+ 查表 + 缺键回退
 │   │   ├── zh.js            # 中文文案
 │   │   └── en.js            # 英文文案
+│   ├── ui/
+│   │   └── notify.js        # 提示通道（toast → dialog → console 逐级降级）
 │   └── compat/
-│       └── capability.js    # 能力探测与降级
+│       └── capability.js    # 能力探测与降级判据
+├── tests/
+│   └── run.mjs              # 逻辑回归测试（无需启动 ComfyUI）
 ├── DESIGN.md
 ├── TECHNICAL.md
 └── README.md                # 阶段性收尾时补
@@ -344,6 +347,7 @@ function assessParam(node, param) {
 | 来源菜单 | `typeof canvas.showConnectionMenu === 'function'` | 缺失 → FR-3 整项置灰 |
 | 值控制控件 | `window.comfyAPI?.widgets?.addValueControlWidgets` | 缺失 → FR-8 跳过补齐，仅沿用原生能力并提示 |
 | 语言设置 | `app.ui.settings` 可读 | 缺失 → 回退 `navigator.language`，再缺失则用中文 |
+| 提示通道 | `app.extensionManager.toast.add` → `app.ui.dialog.show` → `console` 逐级降级（`web/ui/notify.js`） | 均不可用时仅写控制台。**真实可用通道需实测确认**，首次调用会打印 `[BetterNode] 提示通道：xxx` |
 
 ### 7.2 降级显示
 
@@ -418,20 +422,31 @@ node tests/run.mjs
 ```
 
 - **原理**：插件内部使用 `../../scripts/app.js` 这类相对路径导入前端模块。测试脚本在系统临时目录中还原出与浏览器一致的结构（`<sandbox>/scripts/app.js` + `<sandbox>/extensions/ComfyUI-BetterNode/`），因此**相对路径深度与真实运行时完全相同**，可顺带验证导入路径是否正确。
-- **已覆盖**：菜单结构与参数分类（FR-1/FR-2）、入参节点创建（FR-4）、复用与一对多（FR-5）、置灰判定（FR-7/§6.1）、链式挂载与其他扩展共存及异常隔离（§5.1）。当前 16 项断言。
-- **不覆盖**：真实画布渲染、原生 `PrimitiveNode` 的取值拷贝与下拉选项同步、指针/拖拽行为——这些仍需在 ComfyUI 中按 §9.1 手工验证。
+- **已覆盖**：菜单结构与参数分类（FR-1/FR-2）、入参节点创建（FR-4）、复用与一对多（FR-5）、
+  参数状态标识（FR-6）、校验与提示级告警（FR-7）、起线降级链 FR-3a/FR-3b、
+  置灰判定（FR-7 阻断级 / §6.1）、中英双语文案与字典键一致性（§5.9）、
+  链式挂载与其他扩展共存及异常隔离（§5.1）。当前 **32 项断言**。
+- **不覆盖**：真实画布渲染、原生 `PrimitiveNode` 的取值拷贝与下拉选项同步、
+  指针/拖拽的实际落点行为、`extensionManager.toast` 的真实可用性——
+  这些仍需在 ComfyUI 中按 §9.1 手工验证。
 
 ---
 
 ## 10. 未决问题（Open Questions）
 
+**已决**
+
+1. ~~自定义 widget 类型~~ → 已定为**置灰并说明**（`assessParam` 走 `canRecreateWidget`，与 PrimitiveNode 同一判据）。
+2. ~~子图节点适配~~ → 已定为 v1 不支持，**列出但全部置灰并说明原因**。
+3. ~~入参节点标题格式~~ → 已定为 `入参·<参数名>`；标题属数据而非 UI 文案，**不纳入 i18n**。
+4. ~~英文文案的参数名~~ → 参数名一律沿用前端提供的 `widget.label`（核心 i18n 已在英文环境给出英文名），插件不另行翻译。
+
+**仍开放**
+
 1. 是否将语义等价的参数（如 `seed` 与 `noise_seed`）纳入同一复用键？现方案按参数名严格匹配。
-2. 入参节点标题最终格式（当前拟为 `入参·seed`）。注意：节点标题属**数据**而非 UI 文案，是否纳入 i18n 需定。
-3. 已连线的内部参数槽被点击时，是替换现有连线还是拒绝操作。
-4. 自定义 widget 类型（curve / imagecrop 等）在后续里程碑是否支持；若支持，入参节点用何种控件承载。
-5. 是否需要"一键外置该节点全部内部参数"的批量入口。
-6. 子图节点（SubgraphNode）的伪 widget 规格解析是否值得适配（`getInputSpecForWidget` 已有专门分支可参考）。
-7. 英文文案的术语口径：参数名保留英文原名（`seed` / `steps`）还是提供英文别名。
+2. 已连线的内部参数槽被点击时，目前行为是**在同一槽上追加一条连线**（由核心规则决定是否允许）；是否改为"先提示再替换"待定。
+3. 是否需要"一键外置该节点全部内部参数"的批量入口。
+4. 一个参数出现"共享节点 + 多个专用节点"时，菜单是否应展示更细的复用明细。
 
 ---
 

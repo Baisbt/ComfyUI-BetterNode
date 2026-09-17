@@ -1,5 +1,5 @@
 /**
- * 菜单构建（对应 DESIGN FR-1 / FR-2 / FR-3b / FR-4 / FR-5）
+ * 菜单构建（对应 DESIGN FR-1 / FR-2 / FR-3 / FR-4 / FR-5 / FR-6 / FR-7）
  *
  * 注入方式与 ComfyUI 核心一致：向 node.getExtraMenuOptions(canvas, options)
  * 传入的 options 数组追加条目，不改动核心与该函数已有的其他扩展行为。
@@ -7,22 +7,100 @@
 
 import { enumerateParams, groupParams } from "../params/enumerate.js";
 import { assessNode, assessParam, combineVerdicts } from "../params/guards.js";
-import { createOrReuseInputNode } from "../actions/createInputNode.js";
-import { showSourceMenu, isSourceMenuAvailable } from "../actions/showSourceMenu.js";
+import { createOrReuseInputNode, getExternalizeStatus } from "../actions/createInputNode.js";
+import { startLinkDrag, canStartLinkDrag } from "../actions/startLinkDrag.js";
+import { showSourceMenu } from "../actions/showSourceMenu.js";
+import { canLinkParam, canCreateInputNode, canShowSourceMenu } from "../compat/capability.js";
+import { t, hasKey, resetLang } from "../i18n/index.js";
+import { notifyInfo, notifyWarn, notifyError } from "../ui/notify.js";
 
-const MENU_CONTENT = "输入参数";
-const GROUP_LINK = "可连线";
-const GROUP_WIDGET = "内部参数";
+/** 失败原因文案：优先 deny.* （节点/参数级），其次 reason.*（操作级） */
+function reasonText(reason) {
+  if (hasKey(`deny.${reason}`)) return t(`deny.${reason}`);
+  if (hasKey(`reason.${reason}`)) return t(`reason.${reason}`);
+  return String(reason);
+}
 
 /**
  * 生成条目文案。
- * 注意：二级菜单不支持分隔线与分组标题（TECHNICAL §4 机制 6），
- * 因此分组与不可用原因一律通过文案前缀表达。
+ * 二级菜单不支持分隔线与分组标题（TECHNICAL §4 机制 6），
+ * 因此分组、状态与不可用原因一律通过文案前缀表达。
  */
-function formatLabel(param, group, verdict, available) {
-  if (!verdict.ok) return `${param.label}（不可用：${verdict.text}）`;
-  if (!available) return `${param.label}（${group}·当前环境不可用）`;
-  return `${param.label}（${group}）`;
+function buildLabel(param, groupKey, verdict, statusKey) {
+  if (!verdict.ok) {
+    return t("label.unavailable", { name: param.label, reason: reasonText(verdict.reason) });
+  }
+  if (statusKey) {
+    return t("label.itemWithStatus", {
+      name: param.label,
+      group: t(groupKey),
+      status: t(`status.${statusKey}`),
+    });
+  }
+  return t("label.item", { name: param.label, group: t(groupKey) });
+}
+
+/** 可连线参数的状态（FR-6） */
+function linkParamStatus(param) {
+  const input = param.input;
+  const connected = input?.link != null || (input?._floatingLinks?.size ?? 0) > 0;
+  return connected ? "connected" : null;
+}
+
+/** FR-3 点击处理：先试起线拖拽态（FR-3a），不可用时回退来源菜单（FR-3b） */
+function onLinkParamClick(node, param) {
+  if (canStartLinkDrag()) {
+    const result = startLinkDrag(node, param.index);
+    if (result.ok) {
+      notifyInfo(t("info.dragStarted"));
+      return;
+    }
+    // 已在连线中 / 槽不存在 / 抛错 → 不再尝试其他入口，直接说明原因
+    if (result.reason !== "unsupported") {
+      notifyError(t("error.dragFailed", { name: param.label, reason: reasonText(result.reason) }));
+      return;
+    }
+  }
+
+  if (canShowSourceMenu()) {
+    const result = showSourceMenu(node, param.index);
+    if (result.ok) return;
+    notifyError(
+      t("error.sourceMenuFailed", { name: param.label, reason: reasonText(result.reason) })
+    );
+    return;
+  }
+
+  notifyError(t("deny.dragUnsupported"));
+}
+
+/** FR-4 / FR-5 / FR-7 点击处理：创建或复用入参节点 */
+function onWidgetParamClick(node, param) {
+  const result = createOrReuseInputNode(node, param);
+
+  if (!result.ok) {
+    notifyError(t("error.createFailed", { name: param.label, reason: reasonText(result.reason) }));
+    return;
+  }
+
+  if (result.mergeRejected) {
+    notifyWarn(t("warn.mergeRejected", { name: param.label }));
+    return;
+  }
+  if (result.clamped) {
+    notifyWarn(
+      t("warn.valueClamped", {
+        name: param.label,
+        from: result.clamped.from,
+        to: result.clamped.to,
+      })
+    );
+    return;
+  }
+
+  if (result.action === "created") notifyInfo(t("info.created", { name: param.label }));
+  else if (result.action === "reused") notifyInfo(t("info.reused", { name: param.label }));
+  else notifyInfo(t("info.already", { name: param.label }));
 }
 
 /**
@@ -33,6 +111,9 @@ function formatLabel(param, group, verdict, available) {
  * @param {Array}  options 核心传入的菜单项数组（原地追加）
  */
 export function buildInputParamsMenu(node, canvas, options) {
+  // 每次打开菜单重读语言，使前端切换语言后立即生效
+  resetLang();
+
   const nodeVerdict = assessNode(node);
 
   // 节点级不支持且无内容可展示（虚拟节点 / 无参数节点）→ 不注入菜单，避免噪声
@@ -42,51 +123,50 @@ export function buildInputParamsMenu(node, canvas, options) {
   if (!params.length) return;
 
   const { link, widget } = groupParams(params);
-  const sourceMenuReady = isSourceMenuAvailable();
+  const graph = node.graph;
+  const linkReady = canLinkParam();
+  const inputNodeReady = canCreateInputNode();
   const items = [];
 
-  // ---- 可连线参数：FR-3b ----
+  // ---- 可连线参数：FR-3 ----
   for (const param of link) {
-    const verdict = combineVerdicts(nodeVerdict, assessParam(param));
+    const verdict = combineVerdicts(
+      nodeVerdict,
+      assessParam(param),
+      linkReady ? null : { ok: false, reason: "unsupported" }
+    );
     items.push({
-      content: formatLabel(param, GROUP_LINK, verdict, sourceMenuReady),
-      disabled: !verdict.ok || !sourceMenuReady,
-      callback: () => {
-        const result = showSourceMenu(node, param.index);
-        if (!result.ok) {
-          console.warn(`[BetterNode] 无法为参数「${param.name}」打开来源菜单：`, result.reason);
-        }
-      },
+      content: buildLabel(param, "group.link", verdict, linkParamStatus(param)),
+      disabled: !verdict.ok,
+      callback: () => onLinkParamClick(node, param),
     });
   }
 
-  // ---- 内部编辑参数：FR-4 / FR-5 ----
+  // ---- 内部编辑参数：FR-4 / FR-5 / FR-6 ----
   for (const param of widget) {
-    const verdict = combineVerdicts(nodeVerdict, assessParam(param));
-    items.push({
-      content: formatLabel(param, GROUP_WIDGET, verdict, true),
-      disabled: !verdict.ok,
-      callback: () => {
-        const result = createOrReuseInputNode(node, param);
+    const verdict = combineVerdicts(
+      nodeVerdict,
+      assessParam(param),
+      inputNodeReady ? null : { ok: false, reason: "noPrimitiveNode" }
+    );
+    const status = verdict.ok
+      ? getExternalizeStatus(graph, param.name, node, param.index)
+      : null;
 
-        if (!result.ok) {
-          console.warn(`[BetterNode] 为参数「${param.name}」创建入参节点失败：`, result.reason);
-          return;
-        }
-        if (result.already) {
-          console.info(`[BetterNode] 参数「${param.name}」已外置，无需重复操作`);
-        }
-      },
+    items.push({
+      content: buildLabel(param, "group.widget", verdict, status),
+      disabled: !verdict.ok,
+      callback: () => onWidgetParamClick(node, param),
     });
   }
 
   if (!items.length) return;
 
   options.push({
-    content: MENU_CONTENT,
+    content: t("menu.title"),
     has_submenu: true,
     submenu: {
-      title: MENU_CONTENT,
+      title: t("menu.title"),
       options: items,
     },
   });

@@ -3,10 +3,11 @@
  *
  * 复用官方公开方法 canvas.showConnectionMenu({ nodeTo, slotTo, e })，
  * 即原生"把连线拖到空白处"弹出的来源选择菜单。
- * 不依赖指针拖拽生命周期，作为「可连线参数」的稳实现路径。
+ * 不依赖指针拖拽生命周期，是「可连线参数」的兜底入口。
  */
 
 import { app } from "../../../scripts/app.js";
+import { canShowSourceMenu } from "../compat/capability.js";
 
 /** 最近一次右键事件，用于给菜单定位 */
 let lastContextMenuEvent = null;
@@ -27,15 +28,25 @@ export function installContextMenuTracker() {
   );
 }
 
-/** 构造用于菜单定位的事件：优先复用真实右键事件，否则按画布坐标折算 */
-function buildPositionEvent(canvas) {
-  if (lastContextMenuEvent && typeof lastContextMenuEvent.clientX === "number") {
+/** 构造一个带坐标的事件对象；MouseEvent 不可用时退化为携带坐标的普通对象 */
+function makePositionEvent(clientX, clientY) {
+  try {
     return new MouseEvent("click", {
       bubbles: true,
       cancelable: true,
-      clientX: lastContextMenuEvent.clientX,
-      clientY: lastContextMenuEvent.clientY,
+      clientX,
+      clientY,
     });
+  } catch (error) {
+    console.debug("[BetterNode] MouseEvent 不可用，改用坐标对象：", error);
+    return { type: "click", bubbles: true, cancelable: true, clientX, clientY };
+  }
+}
+
+/** 构造用于菜单定位的事件：优先复用真实右键事件，否则按画布坐标折算 */
+function buildPositionEvent(canvas) {
+  if (lastContextMenuEvent && typeof lastContextMenuEvent.clientX === "number") {
+    return makePositionEvent(lastContextMenuEvent.clientX, lastContextMenuEvent.clientY);
   }
 
   const rect = canvas?.canvas?.getBoundingClientRect?.();
@@ -43,17 +54,10 @@ function buildPositionEvent(canvas) {
   const offset = canvas?.ds?.offset ?? [0, 0];
   const graphMouse = canvas?.graph_mouse ?? [0, 0];
 
-  return new MouseEvent("click", {
-    bubbles: true,
-    cancelable: true,
-    clientX: (rect?.left ?? 0) + (graphMouse[0] + offset[0]) * scale,
-    clientY: (rect?.top ?? 0) + (graphMouse[1] + offset[1]) * scale,
-  });
-}
-
-/** 能力探测：来源菜单是否可用 */
-export function isSourceMenuAvailable() {
-  return typeof app?.canvas?.showConnectionMenu === "function";
+  return makePositionEvent(
+    (rect?.left ?? 0) + (graphMouse[0] + offset[0]) * scale,
+    (rect?.top ?? 0) + (graphMouse[1] + offset[1]) * scale
+  );
 }
 
 /**
@@ -65,7 +69,7 @@ export function isSourceMenuAvailable() {
 export function showSourceMenu(targetNode, slotIndex) {
   const canvas = app?.canvas;
 
-  if (!isSourceMenuAvailable()) return { ok: false, reason: "unavailable" };
+  if (!canShowSourceMenu()) return { ok: false, reason: "unsupported" };
   if (!canvas?.graph) return { ok: false, reason: "noGraph" };
 
   try {
