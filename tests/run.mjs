@@ -3,8 +3,10 @@
  *
  * 用途：在不启动 ComfyUI 的前提下，用桩对象验证插件的核心逻辑。
  * 覆盖：菜单结构(FR-1/FR-2)、入参节点创建与复用(FR-4/FR-5)、参数状态(FR-6)、
- *       校验与提示(FR-7)、起线降级(FR-3a/FR-3b)、置灰判定(§6.1)、
+ *       校验与提示(FR-7)、置灰判定(§6.1)、无内部参数节点的边界(FR-2)、
  *       扩展链式挂载与其他扩展共存(§5.1)、中英双语(§5.9)
+ *
+ * 注：FR-3（可连线参数）已下线，菜单只列内部编辑参数，故无相关用例。
  *
  * 运行：node tests/run.mjs
  *
@@ -71,14 +73,8 @@ const graph = {
   getLink(id) { return this.links[id]; },
 };
 
-let lastContextMenuEvent = null;
 const canvas = {
   graph,
-  showConnectionMenuCalls: [],
-  showConnectionMenu(options) {
-    this.showConnectionMenuCalls.push(options);
-    lastContextMenuEvent = 'source-menu';
-  },
   setDirty() {},
 };app.graph = graph;
 app.canvas = canvas;
@@ -216,13 +212,15 @@ ok('注入「输入参数」二级菜单，且只注入一项');
 
 const labels = opts[0].submenu.options.map((i) => i.content);
 console.log(`      ${labels.join(' | ')}`);
-assert.equal(labels.length, 10, '应列出全部 10 个输入参数');
-assert.ok(!labels.some((l) => l.includes('control_after_generate')), '不得出现控件联动项');
-ok('列出全部 10 个参数，且排除 control_after_generate');
+assert.equal(labels.length, 6, '应只列出 6 个内部编辑参数');
+assert.deepEqual(labels, ['种子', '步数', 'CFG', '采样器', '调度器', '降噪'], '顺序应与节点定义一致，且不带分组后缀');
+ok('只列出 6 个内部编辑参数（可连线参数不出现）');
 
-assert.equal(labels.filter((l) => l.includes('（可连线）')).length, 4, 'model/positive/negative/latent_image');
-assert.equal(labels.filter((l) => l.includes('（内部参数）')).length, 6, 'seed/steps/cfg/sampler_name/scheduler/denoise');
-ok('分类正确：4 可连线 + 6 内部参数');
+assert.ok(!labels.some((l) => l.includes('control_after_generate')), '不得出现控件联动项');
+ok('排除 control_after_generate 控件联动项');
+
+assert.ok(!labels.some((l) => ['model', 'positive', 'negative', 'latent_image'].some((n) => l.startsWith(n))));
+ok('可连线参数（model / positive / negative / latent_image）不在菜单中');
 
 // ---------------------------------------------------------------- 2. 入参节点
 
@@ -266,13 +264,8 @@ ok('已连接的目标显示「已外置」');
 
 const ks3 = makeKSampler(3, 7);
 assert.ok(findItem(ks3, '种子').content.includes('可复用'), findItem(ks3, '种子').content);
-assert.ok(findItem(ks3, '步数').content.includes('（内部参数）'), findItem(ks3, '步数').content);
-ok('未连接的目标显示「可复用」，无入参节点则不带状态');
-
-const connectedLinkNode = makeKSampler(4, 7);
-connectedLinkNode.inputs[0].link = 999; // 模拟 model 槽已被连线
-assert.ok(findItem(connectedLinkNode, 'model').content.includes('已连线'), findItem(connectedLinkNode, 'model').content);
-ok('已连线的可连线参数显示「已连线」');
+assert.equal(findItem(ks3, '步数').content, '步数', findItem(ks3, '步数').content);
+ok('未连接的目标显示「可复用」，无入参节点则只显示参数名');
 
 // ---------------------------------------------------------------- 5. 提示级校验
 
@@ -374,31 +367,39 @@ assert.equal(
 );
 ok('无参数节点不注入菜单');
 
-// ---------------------------------------------------------------- 7. 来源菜单
+// ---------------------------------------------------------------- 7. 无内部参数
 
-console.log('\n[7] 可连线参数：来源选择菜单（FR-3）');
+console.log('\n[7] 没有内部编辑参数的节点（FR-2 边界）');
 
-const linkNode = makeKSampler(12, 1);
-canvas.showConnectionMenuCalls = [];
-lastContextMenuEvent = null;
+const pureLinkNode = {
+  id: 12,
+  graph,
+  isVirtualNode: false,
+  isSubgraphNode: () => false,
+  inputs: [
+    { name: 'model', type: 'MODEL' },
+    { name: 'positive', type: 'CONDITIONING' },
+  ],
+  widgets: [],
+};
+assert.equal(openMenu(pureLinkNode).length, 0, '只有可连线参数时不应注入菜单');
+ok('只有可连线参数（无内部参数）时整项不注入，避免空菜单');
 
-clickItem(linkNode, 'model');
-assert.equal(canvas.showConnectionMenuCalls.length, 1, '应调用一次 showConnectionMenu');
-const call = canvas.showConnectionMenuCalls[0];
-assert.equal(call.nodeTo, linkNode, 'nodeTo 应为目标节点');
-assert.equal(call.slotTo, 0, 'slotTo 应为 model 的槽下标');
-assert.ok(call.e && typeof call.e.clientX === 'number', '应附带带坐标的事件对象');
-ok('可连线参数点击后弹出来源选择菜单（含正确槽位与坐标）');
-
-// 能力缺失时应置灰并说明，而不是静默失败
-const savedShowMenu = canvas.showConnectionMenu;
-delete canvas.showConnectionMenu;
-const disabledLink = findItem(linkNode, 'model');
-assert.equal(disabledLink.disabled, true);
-assert.ok(disabledLink.content.includes('不可用'), disabledLink.content);
-console.log(`      ${disabledLink.content}`);
-ok('来源菜单不可用时条目置灰并说明原因');
-canvas.showConnectionMenu = savedShowMenu;
+const mixedNode = {
+  id: 13,
+  graph,
+  isVirtualNode: false,
+  isSubgraphNode: () => false,
+  inputs: [
+    { name: 'model', type: 'MODEL' },
+    { name: 'strength', type: 'FLOAT', widget: { name: 'strength' } },
+  ],
+  widgets: [{ name: 'strength', label: '强度', value: 1 }],
+};
+const mixedLabels = openMenu(mixedNode)[0].submenu.options.map((i) => i.content);
+console.log(`      ${mixedLabels.join(' | ')}`);
+assert.deepEqual(mixedLabels, ['强度'], '混合节点只应列出内部参数');
+ok('混合节点仅列出内部参数，可连线条目被过滤');
 
 // ---------------------------------------------------------------- 8. 中英双语
 
@@ -414,9 +415,15 @@ assert.equal(enOpts[0].content, 'Input Parameters');
 assert.equal(getLang(), 'en');
 const enLabels = enOpts[0].submenu.options.map((i) => i.content);
 console.log(`      ${enLabels.join(' | ')}`);
-assert.ok(enLabels.some((l) => l.includes('Linkable')), enLabels.join('|'));
-assert.ok(enLabels.some((l) => l.includes('Internal')), enLabels.join('|'));
-ok('切换到英文后菜单文案全部变为英文');
+assert.ok(enLabels.some((l) => l.includes('reusable')), enLabels.join('|'));
+
+// 不可用原因也应译为英文
+const enLocked = makeKSampler(15, 1);
+enLocked.inputs[1].locked = true;
+const enLockedLabel = findItem(enLocked, '种子').content;
+console.log(`      ${enLockedLabel}`);
+assert.ok(enLockedLabel.includes('unavailable'), enLockedLabel);
+ok('切换到英文后菜单文案（含状态与不可用原因）全部变为英文');
 
 app.ui.settings = { getSettingValue: () => 'zh-CN' };
 resetLang();

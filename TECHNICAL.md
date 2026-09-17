@@ -2,10 +2,10 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | v1.2 |
+| 文档版本 | v1.3 |
 | 状态 | 待审阅 |
 | 关联文档 | `DESIGN.md`（产品设计）、`AGENTS.md`（开发约束） |
-| 变更记录 | v1.1 新增 FR-3 双入口、FR-7 校验与中英引导、FR-8 随机化能力、v1 支持范围；补 §5.8 guards、§5.9 i18n<br>v1.2 **§5.4 重写**：起线拖拽实测否决（§5.4.1 记录根因），FR-3 收敛为来源菜单单入口；同步目录结构、机制表、能力探测、风险、测试矩阵、未决问题 |
+| 变更记录 | v1.1 新增 FR-3 双入口、FR-7 校验与中英引导、FR-8 随机化能力；补 §5.8 guards、§5.9 i18n<br>v1.2 §5.4 重写，起线拖拽实测否决（§5.4.1 记录根因）<br>v1.3 **FR-3 整体下线**：删除 `showSourceMenu.js` 与相关探测；§5.4 改为下线记录（保留 §5.4.1 根因与 §5.4.2 用法追溯）；同步目录、机制表、能力探测、风险、测试矩阵、未决问题 |
 
 ---
 
@@ -64,7 +64,6 @@ ComfyUI-BetterNode/
 │   │   ├── enumerate.js     # 参数枚举、分类、当前值/选项读取
 │   │   └── guards.js        # 支持范围判定（返回原因键，文案由 i18n 解析）
 │   ├── actions/
-│   │   ├── showSourceMenu.js# FR-3 选择来源节点（唯一入口）
 │   │   └── createInputNode.js # FR-4/FR-5/FR-6 入参节点工厂、复用索引、状态查询
 │   ├── i18n/
 │   │   ├── index.js         # 语言判定（读 Comfy.Locale）+ 查表 + 缺键回退
@@ -103,7 +102,7 @@ ComfyUI-BetterNode/
 | 5d | 原生同款行为 | 同文件 `onInputDblClick`：双击 widget 输入槽自动创建 PrimitiveNode（`graph.add` → 避让定位 → `node.connect(0, this, slot)` → `title = input.name`） | FR-4 实现范本 |
 | 6 | 菜单后处理限制 | `contextMenuConverter.convertSubmenuToOptions` 丢弃 `null` 分隔符；`buildStructuredMenu` 将非核心项归入「Extensions」分组 | FR-2 分组文案化 |
 | 7 | 全局引用 | `window.LiteGraph` 在前端包中已挂载；`app` 由 `scripts/app.js` 导出 | 插件取用方式 |
-| 8 | **来源选择菜单** | `LGraphCanvas.showConnectionMenu({ nodeTo, slotTo, e })`（`LGraphCanvas.ts:6946`，公开方法）。原生"连线落点在空白处"即调用它（`LGraphCanvas.ts:870-926` `dropped-on-canvas`，受 `LiteGraph.release_link_on_empty_shows_menu` 控制） | **FR-3b**，不依赖指针拖拽生命周期 |
+| 8 | ~~来源选择菜单~~ | `LGraphCanvas.showConnectionMenu({ nodeTo, slotTo, e })`（`LGraphCanvas.ts:6946`，公开方法）。原生"连线落点在空白处"即调用它（`LGraphCanvas.ts:870-926` `dropped-on-canvas`）。**FR-3 整体下线后已不再使用** | 仅供追溯（勿重引入） |
 | 9 | **全局模块表** | `window.comfyAPI` 暴露 12 个模块：`api / app / changeTracker / controlWidgetMarker / defaultGraph / domWidget / pnginfo / promotedWidgetControl / ui / utils / valueControl / widgets`（`scripts/*.js` 均为转发层）。**其中无 i18n** | 取用官方实现；明确 i18n 需自建 |
 | 10 | **值控制控件** | 由控件构造器自动添加：`inputSpec.control_after_generate` 为真，**或** `inputSpec.name ∈ ['seed','noise_seed']`；combo 控件选项 `fixed/increment/decrement/randomize`（combo 目标额外 `increment-wrap`），默认 `randomize`；`serialize:false` + `canvasOnly:true`，以 `IS_CONTROL_WIDGET` 标记并挂到宿主 `linkedWidgets`；队列时由 `src/scripts/valueControl.ts` `nextValueForLinkedTarget` 计算新值；生效时机受设置 `Comfy.WidgetControlMode` 控制。`PrimitiveNode._createWidget` 中的同名分支为**兜底**（避免重复添加） | **FR-8 原生已满足**（无需实现） |
 | 11 | **规格合并校验** | `src/utils/nodeDefUtil.ts:120` `mergeInputSpec`：类型须完全相同（INT/FLOAT 不互通）；数值型要求范围重叠，合并 `min=max(min1,min2)`、`max=min(max1,max2)`、`step=lcm(step1,step2)`；combo 取选项交集，空交集返回 null；其余除 `IGNORE_KEYS` 外所有键须一致。`mergeIfValid` 内对值做越界钳制 | **FR-7** 提示级校验依据 |
@@ -185,26 +184,26 @@ function enumerateParams(node) {
 - **下拉选项**：`widget.options?.values`（用于 FR-6 状态展示与显示校验，实际选项同步由 PrimitiveNode 负责）。
 - **高级/隐藏参数**：`widget.options?.advanced` / `widget.options?.hidden` 仅用于展示标记，不额外过滤。
 
-### 5.4 FR-3 可连线参数：选择来源节点（唯一入口）
+### 5.4 FR-3 可连线参数 —— ⛔ 已下线（无实现）
 
-**实现**：复用官方公开方法 `canvas.showConnectionMenu({ nodeTo, slotTo, e })`，
-即原生"把连线拖到空白处"弹出的来源菜单，选中来源即建链。
+**当前状态**：「输入参数」菜单**只列内部编辑参数**；可连线参数已从菜单中移除，
+`web/actions/showSourceMenu.js` 及相关能力探测、文案键均已删除。
 
-```js
-canvas.showConnectionMenu({
-  nodeTo: targetNode,
-  slotTo: slotIndex,          // 传下标而非槽对象，避免同名槽歧义
-  e: makePositionEvent(...),  // 菜单定位需要 clientX/clientY
-});
-```
+**为何下线**：本节曾先后存在两版实现，均被否决。
 
-- 定位事件优先复用真实的 `contextmenu` 事件（菜单回调拿不到 MouseEvent，
-  需在 `installContextMenuTracker` 中于交互发生时先行捕获），
-  缺失时按 `canvas.graph_mouse` 与 `ds.scale/offset` 折算。
-- `MouseEvent` 不可用的环境退化为携带坐标的普通对象。
-- 能力缺失时条目置灰并说明原因，不做静默失败。
+| 版本 | 做法 | 结果 |
+|---|---|---|
+| v1 | 起线拖拽态：`linkConnector.dragNewFromInput()` + `_linkConnectorDrop()` | ❌ 实测**只有连线动画、无法建立连接**（根因见 §5.4.1） |
+| v2 | 来源选择菜单：`canvas.showConnectionMenu({ nodeTo, slotTo, e })` | ⚠️ 可工作，但**交互体验不符合预期，比手动连线更绕** |
 
-#### 5.4.1 为什么不做「起线拖拽态」（已实测否决，请勿重试）
+**用户决定（2026-09-17）**：彻底取消该功能，不再提供菜单内连线入口。
+ComfyUI 原生支持把连线直接拖到参数槽上，插件无需重复提供入口。
+
+保留本节内容仅为：
+1. 记录 §5.4.1 的技术根因，避免将来重复踩坑；
+2. 说明 `showConnectionMenu` 的正确用法（若将来出现其他需要它的场景可复用）。
+
+#### 5.4.1 为什么不能做「起线拖拽态」（已实测否决，请勿重试）
 
 **结论**：从节点菜单触发的原生拖拽**无法完成落点**，只能看到连线动画。
 该方案已实测否决并从代码中移除。根因如下：
@@ -235,16 +234,17 @@ canvas.showConnectionMenu({
 
 **若要重新支持拖拽手感**，需要自行实现输出槽命中判定（核心的判定逻辑内联在
 `processMouseDown` 中，未对外暴露），并按 `node.connect()` 建链，同时自行处理
-类型校验与 Reroute 等分支 —— 属独立课题，需单独立项评估。
+类型校验与 Reroute 等分支 —— 属独立课题。**目前不在计划内。**
 
-#### 5.4.2 能力不可用时的降级
+#### 5.4.2 追溯：来源菜单的正确调用方式
 
-| 情况 | 行为 |
-|---|---|
-| `canvas.showConnectionMenu` 缺失 | 该组条目全部**置灰**，文案说明"当前前端版本不支持从菜单连线，请手动拖线到该参数上" |
-| 调用抛错 | 错误级提示，附带原因 |
+若将来出现其他需要它的场景，用法如下（`slotTo` 传下标可避免同名槽歧义；
+菜单定位需要 `clientX/clientY`，菜单回调拿不到 MouseEvent，
+需在画布上以捕获阶段监听 `contextmenu` 先行记录）：
 
-> 原生替代：用户仍可手动把连线拖到参数槽上；ComfyUI 原生也支持双击 widget 输入槽自动挂载 Primitive 节点。
+```js
+canvas.showConnectionMenu({ nodeTo: targetNode, slotTo: slotIndex, e: positionEvent });
+```
 
 ### 5.5 入参节点工厂（FR-4）
 
@@ -394,9 +394,8 @@ function assessParam(node, param) {
 |---|---|---|
 | 前端版本 | 读取前端暴露的版本信息 | 非 1.47.x 时提示"未验证版本"，功能仍尝试启用 |
 | 菜单扩展点 | `LGraphNode.prototype.getExtraMenuOptions` 是否存在 | 缺失 → 整体禁用，控制台说明原因 |
-| 入参节点 | `window.LiteGraph.registered_node_types.PrimitiveNode` | 缺失 → 禁用 FR-4/FR-5，FR-3 仍可用 |
-| 来源菜单 | `typeof canvas.showConnectionMenu === 'function'` | 缺失 → FR-3 整组置灰并说明 |
-| 值控制控件 | `window.comfyAPI?.widgets?.addValueControlWidgets` | 缺失 → FR-8 跳过补齐，仅沿用原生能力并提示 |
+| 入参节点 | `window.LiteGraph.registered_node_types.PrimitiveNode` | 缺失 → 禁用入参节点功能，菜单整项不注入 |
+| 值控制控件 | `window.comfyAPI?.widgets?.isValidWidgetType` | 缺失 → 回退插件内置标准类型白名单（`canRecreateWidget`） |
 | 语言设置 | `app.ui.settings` 可读 | 缺失 → 回退 `navigator.language`，再缺失则用中文 |
 | 提示通道 | `app.extensionManager.toast.add` → `app.ui.dialog.show` → `console` 逐级降级（`web/ui/notify.js`） | 均不可用时仅写控制台。**真实可用通道需实测确认**，首次调用会打印 `[BetterNode] 提示通道：xxx` |
 
@@ -410,9 +409,8 @@ function assessParam(node, param) {
 
 | 级别 | 风险 | 缓解 |
 |---|---|---|
-| ~~P0~~ 已否决 | ~~从菜单启动的起线缺少指针生命周期钩子，可能无法落点~~ | **2026-09-17 实测确认无法落点，方案已整体移除**（§5.4.1） |
+| ~~P0~~ 已下线 | ~~从菜单启动的起线缺少指针生命周期钩子，可能无法落点~~ | **2026-09-17 实测确认无法落点；随后来源菜单方案亦因体验不符预期被否，FR-3 整体下线**（§5.4） |
 | ~~P0~~ 已解决 | ~~FR-8 依赖原生值控制控件的添加条件，该条件语义反直觉~~ | **2026-09-17 实测已确认**：控件由构造器自动添加，原生完整覆盖，插件无需实现 |
-| P1 | `showConnectionMenu` 为非契约方法，版本升级可能失效 | 收敛到 `compat` 层，集中访问 + 探测 + 置灰降级 |
 | P1 | 依赖 `PrimitiveNode` 的内部行为（惰性 widget、合并规则） | 只依赖其对外可观测行为，不自研同步；升级时以 AC 回归验证 |
 | P1 | 插件间 `getExtraMenuOptions` 冲突 | 强制链式包装（`chain(prev, next)`），绝不直接赋值；加入共存回归用例 |
 | P1 | 前端未暴露 i18n，双语字典需自行维护，易出现缺键 | 字典集中管理 + 缺键回退并告警 + 字典键一致性用例覆盖 |
@@ -430,21 +428,21 @@ function assessParam(node, param) {
 
 | 编号 | 场景 | 覆盖需求 | 预期 |
 |---|---|---|---|
-| T-01 | KSampler 右键，检查菜单与参数清单 | FR-1、FR-2、AC-1、AC-2 | 两组齐全，无 `control_after_generate` |
-| T-02 | 点击 `model` → 来源菜单选 CheckpointLoader | FR-3、AC-3 | 连线成功 |
+| T-01 | KSampler 右键，检查菜单与参数清单 | FR-1、FR-2、AC-1、AC-2、AC-11 | 只列 6 个内部参数，无 `control_after_generate`，无可连线条目 |
+| T-02 | 只有可连线参数的节点（如纯 MODEL 输入） | FR-2 | 菜单整项不注入 |
 | T-03 | 点击 `seed`，检查入参节点取值 | FR-4、AC-4 | 值等于原 seed |
 | T-04 | 点击 `sampler_name`，比对各选项 | FR-4、AC-5 | 选项完全一致 |
 | T-05 | 一个入参节点连 3 个 KSampler 的 `seed`，改值后运行 | FR-5、AC-6 | 三者同步且生效 |
 | T-06 | 点击第二个 KSampler 的 `seed` | FR-5、AC-7 | 复用既有入参节点 |
 | T-07 | 撤销 / 重做 | §6.4、AC-8 | 状态正确回滚 |
 | T-08 | 保存 → 重载 | §5.7、AC-9 | 节点、连线、取值恢复 |
-| T-09 | 来源菜单中取消 | FR-3 | 无副作用，画布状态正常 |
+| T-09 | 手动把连线拖到参数槽上（原生方式） | §5.4 | 应正常工作，插件不干扰 |
 | T-10 | KSamplerAdvanced 的 advanced 参数 | FR-2 | 正常列出 |
 | T-11 | 无输入参数的节点 | FR-1 | 条目不注入 |
 | T-12 | 断线 / 删除入参节点后重开菜单 | FR-6 | 状态标识回到"未外置" |
 | T-13 | 原生文件比对 | AC-10 | 无任何原生文件改动 |
-| T-14 | 来源菜单能力缺失（屏蔽 `showConnectionMenu`） | FR-3、§5.4.2 | 该组条目置灰并说明 |
-| T-15 | 来源菜单在空白区域的 Add Node / Search 分支 | FR-3 | 正常 |
+| T-14 | 菜单文案是否已去掉分组后缀 | FR-2 | 形如 `种子 · 已外置`、`步数` |
+| T-15 | 已连线的内部参数槽再次点击 | FR-5 | 行为稳定，不产生重复节点 |
 | T-16 | `socketless` 参数 / 子图节点 / 自定义 widget | FR-7、§6.1、AC-12 | 置灰且原因文案正确 |
 | T-17 | 制造合并钳制（范围不同的两个节点同名参数） | FR-7、AC-13 | 出现原因提示，非静默 |
 | T-18 | 合并被拒（INT 与 FLOAT / 范围无交集） | FR-7 | 改为新建节点并提示 |
@@ -473,13 +471,12 @@ node tests/run.mjs
 ```
 
 - **原理**：插件内部使用 `../../scripts/app.js` 这类相对路径导入前端模块。测试脚本在系统临时目录中还原出与浏览器一致的结构（`<sandbox>/scripts/app.js` + `<sandbox>/extensions/ComfyUI-BetterNode/`），因此**相对路径深度与真实运行时完全相同**，可顺带验证导入路径是否正确。
-- **已覆盖**：菜单结构与参数分类（FR-1/FR-2）、入参节点创建（FR-4）、复用与一对多（FR-5）、
-  参数状态标识（FR-6）、校验与提示级告警（FR-7）、来源菜单调用与能力缺失降级（FR-3/§5.4.2）、
-  置灰判定（FR-7 阻断级 / §6.1）、中英双语文案与字典键一致性（§5.9）、
+- **已覆盖**：菜单结构与参数过滤（FR-1/FR-2）、入参节点创建（FR-4）、复用与一对多（FR-5）、
+  参数状态标识（FR-6）、校验与提示级告警（FR-7）、置灰判定（FR-7 阻断级 / §6.1）、
+  无内部参数节点不注入菜单、中英双语文案与字典键一致性（§5.9）、
   链式挂载与其他扩展共存及异常隔离（§5.1）。当前 **29 项断言**。
 - **不覆盖**：真实画布渲染、原生 `PrimitiveNode` 的取值拷贝与下拉选项同步、
-  来源菜单的真实弹出与定位、`extensionManager.toast` 的真实可用性——
-  这些仍需在 ComfyUI 中按 §9.1 手工验证。
+  `extensionManager.toast` 的真实可用性——这些仍需在 ComfyUI 中按 §9.1 手工验证。
 
 ---
 
@@ -499,7 +496,7 @@ node tests/run.mjs
    若后续需要，可加一个仅控制台可用的调试入口来强制触发。
 3. 是否需要"一键外置该节点全部内部参数"的批量入口。
 4. 一个参数出现"共享节点 + 多个专用节点"时，菜单是否应展示更细的复用明细。
-5. 是否重新立项评估"拖拽式连线"（需自行实现输出槽命中判定，见 §5.4.1）。
+5. **菜单内连线能力已下线**，不在计划内。若将来重启，需先解决 §5.4.1 的指针机制问题，并重新评估交互形式。
 
 ---
 

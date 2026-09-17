@@ -9,18 +9,13 @@ export const en = {
   // Menu
   "menu.title": "Input Parameters",
 
-  // Groups
-  "group.link": "Linkable",
-  "group.widget": "Internal",
-
   // Parameter status (FR-6)
   "status.externalized": "externalized",
   "status.reusable": "reusable",
-  "status.connected": "connected",
 
   // Label templates
-  "label.item": "{name} ({group})",
-  "label.itemWithStatus": "{name} ({group} · {status})",
+  "label.item": "{name}",
+  "label.itemWithStatus": "{name} · {status}",
   "label.unavailable": "{name} (unavailable: {reason})",
 
   // Blocking reasons (FR-7)
@@ -32,7 +27,6 @@ export const en = {
   "deny.noSocket": "this parameter has no input slot and cannot be externalized",
   "deny.exoticWidget": "this parameter type cannot be auto-converted into an input node",
   "deny.noPrimitiveNode": "the built-in Primitive node was not found; cannot create an input node",
-  "deny.linkUnsupported": "this frontend version does not support linking from the menu; please drag a link onto the parameter manually",
 
   // Warnings (FR-7)
   "warn.valueClamped": "\"{name}\" had its range narrowed by the existing input node; value changed from {from} to {to}",
@@ -42,16 +36,13 @@ export const en = {
   "reason.noGraph": "the canvas is not ready",
   "reason.noSlot": "the parameter slot was not found",
   "reason.noLiteGraph": "the global LiteGraph object was not found",
-  "reason.unsupported": "this frontend version does not support the operation",
   "reason.noDropHook": "could not register the link-drop handler",
   "reason.threw": "the frontend API threw an error; see the console",
   "reason.connectFailed": "the link was not created",
-  "reason.unavailable": "this capability is unavailable",
 
   // Errors (FR-7)
   "error.connectFailed": "failed to connect \"{name}\"; try dragging the link manually",
   "error.createFailed": "failed to create an input node for \"{name}\": {reason}",
-  "error.sourceMenuFailed": "failed to open the source menu for \"{name}\": {reason}",
 
   // Info (console only)
   "info.loaded": "loaded",

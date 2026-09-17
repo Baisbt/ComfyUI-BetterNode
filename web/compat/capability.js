@@ -5,18 +5,6 @@
  * 探测失败一律走降级路径，不做静默失效。
  */
 
-import { app } from "../../../scripts/app.js";
-
-/**
- * FR-3：是否可弹出"选择来源节点"菜单。
- *
- * 注：原先还提供过"起线拖拽态"入口（canvas.linkConnector.dragNewFromInput），
- * 实测无法落点，已移除。原因见 TECHNICAL §5.4。
- */
-export function canShowSourceMenu() {
-  return typeof app?.canvas?.showConnectionMenu === "function";
-}
-
 /** 是否可创建入参节点：依赖内置虚拟节点 PrimitiveNode */
 export function canCreateInputNode() {
   return Boolean(globalThis.LiteGraph?.registered_node_types?.PrimitiveNode);

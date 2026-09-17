@@ -10,7 +10,6 @@
 
 import { app } from "../../scripts/app.js";
 import { buildInputParamsMenu } from "./menu/buildMenu.js";
-import { installContextMenuTracker } from "./actions/showSourceMenu.js";
 import { t, getLang, getLangSource } from "./i18n/index.js";
 
 const EXTENSION_NAME = "BetterNode.InputParams";
@@ -38,9 +37,6 @@ app.registerExtension({
   name: EXTENSION_NAME,
 
   async setup() {
-    // 菜单回调拿不到 MouseEvent，需在交互发生时先行捕获（用于来源菜单定位）
-    installContextMenuTracker();
-
     console.info(
       `[${EXTENSION_NAME}] ${t("info.loaded")} · ${t("info.language", { lang: getLang() })}` +
         ` (${getLangSource()})`

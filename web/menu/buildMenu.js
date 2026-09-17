@@ -1,15 +1,18 @@
 /**
- * 菜单构建（对应 DESIGN FR-1 / FR-2 / FR-3 / FR-4 / FR-5 / FR-6 / FR-7）
+ * 菜单构建（对应 DESIGN FR-1 / FR-2 / FR-4 / FR-5 / FR-6 / FR-7）
+ *
+ * 「输入参数」只列出**内部编辑参数**（widget 类参数），为其创建/复用入参节点。
+ * 可连线参数（model / positive 等）不在菜单中出现——用户可按 ComfyUI 原生方式
+ * 直接拖线到参数槽，无需插件提供入口。
  *
  * 注入方式与 ComfyUI 核心一致：向 node.getExtraMenuOptions(canvas, options)
  * 传入的 options 数组追加条目，不改动核心与该函数已有的其他扩展行为。
  */
 
-import { enumerateParams, groupParams } from "../params/enumerate.js";
+import { enumerateParams } from "../params/enumerate.js";
 import { assessNode, assessParam, combineVerdicts, deny } from "../params/guards.js";
 import { createOrReuseInputNode, getExternalizeStatus } from "../actions/createInputNode.js";
-import { showSourceMenu } from "../actions/showSourceMenu.js";
-import { canShowSourceMenu, canCreateInputNode } from "../compat/capability.js";
+import { canCreateInputNode } from "../compat/capability.js";
 import { t, hasKey, resetLang } from "../i18n/index.js";
 import { notifyInfo, notifyWarn, notifyError } from "../ui/notify.js";
 
@@ -23,44 +26,20 @@ function reasonText(reason) {
 /**
  * 生成条目文案。
  * 二级菜单不支持分隔线与分组标题（TECHNICAL §4 机制 6），
- * 因此分组、状态与不可用原因一律通过文案前缀表达。
+ * 因此状态与不可用原因一律通过文案前缀表达。
+ * 现已只剩内部参数一组，故不再输出分组后缀。
  */
-function buildLabel(param, groupKey, verdict, statusKey) {
+function buildLabel(param, verdict, statusKey) {
   if (!verdict.ok) {
     return t("label.unavailable", { name: param.label, reason: reasonText(verdict.reason) });
   }
   if (statusKey) {
     return t("label.itemWithStatus", {
       name: param.label,
-      group: t(groupKey),
       status: t(`status.${statusKey}`),
     });
   }
-  return t("label.item", { name: param.label, group: t(groupKey) });
-}
-
-/** 可连线参数的状态（FR-6） */
-function linkParamStatus(param) {
-  const input = param.input;
-  const connected = input?.link != null || (input?._floatingLinks?.size ?? 0) > 0;
-  return connected ? "connected" : null;
-}
-
-/**
- * FR-3 点击处理：弹出"选择来源节点"菜单。
- *
- * 说明：曾实现过"起线拖拽态"（dragNewFromInput），但实测无法落点。
- * 根因是原生落点依赖 pointerdown 记录的 eDown，菜单点击没有这个动作，
- * 导致 onDragEnd 永不触发；合成指针序列也无法绕过（详见 TECHNICAL §5.4）。
- * 因此本操作只保留来源菜单这一条路径。
- */
-function onLinkParamClick(node, param) {
-  const result = showSourceMenu(node, param.index);
-  if (result.ok) return;
-
-  notifyError(
-    t("error.sourceMenuFailed", { name: param.label, reason: reasonText(result.reason) })
-  );
+  return t("label.item", { name: param.label });
 }
 
 /** FR-4 / FR-5 / FR-7 点击处理：创建或复用入参节点 */
@@ -108,48 +87,29 @@ export function buildInputParamsMenu(node, canvas, options) {
   // 节点级不支持且无内容可展示（虚拟节点 / 无参数节点）→ 不注入菜单，避免噪声
   if (!nodeVerdict.ok && !nodeVerdict.showParams) return;
 
-  const params = enumerateParams(node);
+  // 只保留内部编辑参数；节点若没有此类参数则整项不注入，避免出现空菜单
+  const params = enumerateParams(node).filter((param) => param.kind === "widget");
   if (!params.length) return;
 
-  const { link, widget } = groupParams(params);
-  const graph = node.graph;
-  const sourceMenuReady = canShowSourceMenu();
   const inputNodeReady = canCreateInputNode();
   const items = [];
 
-  // ---- 可连线参数：FR-3 ----
-  for (const param of link) {
-    const verdict = combineVerdicts(
-      nodeVerdict,
-      assessParam(param),
-      sourceMenuReady ? null : deny("linkUnsupported")
-    );
-    items.push({
-      content: buildLabel(param, "group.link", verdict, linkParamStatus(param)),
-      disabled: !verdict.ok,
-      callback: () => onLinkParamClick(node, param),
-    });
-  }
-
-  // ---- 内部编辑参数：FR-4 / FR-5 / FR-6 ----
-  for (const param of widget) {
+  for (const param of params) {
     const verdict = combineVerdicts(
       nodeVerdict,
       assessParam(param),
       inputNodeReady ? null : deny("noPrimitiveNode")
     );
     const status = verdict.ok
-      ? getExternalizeStatus(graph, param.name, node, param.index)
+      ? getExternalizeStatus(node.graph, param.name, node, param.index)
       : null;
 
     items.push({
-      content: buildLabel(param, "group.widget", verdict, status),
+      content: buildLabel(param, verdict, status),
       disabled: !verdict.ok,
       callback: () => onWidgetParamClick(node, param),
     });
   }
-
-  if (!items.length) return;
 
   options.push({
     content: t("menu.title"),

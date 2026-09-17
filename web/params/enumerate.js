@@ -58,15 +58,3 @@ export function enumerateParams(node) {
 
   return params;
 }
-
-/**
- * 按分类分组：可连线参数 / 内部编辑参数。
- *
- * @param {Array} params enumerateParams 的结果
- */
-export function groupParams(params) {
-  return {
-    link: params.filter((p) => p.kind === "link"),
-    widget: params.filter((p) => p.kind === "widget"),
-  };
-}
