@@ -103,7 +103,7 @@ ComfyUI-BetterNode/
 | 7 | 全局引用 | `window.LiteGraph` 在前端包中已挂载；`app` 由 `scripts/app.js` 导出 | 插件取用方式 |
 | 8 | **来源选择菜单** | `LGraphCanvas.showConnectionMenu({ nodeTo, slotTo, e })`（`LGraphCanvas.ts:6946`，公开方法）。原生"连线落点在空白处"即调用它（`LGraphCanvas.ts:870-926` `dropped-on-canvas`，受 `LiteGraph.release_link_on_empty_shows_menu` 控制） | **FR-3b**，不依赖指针拖拽生命周期 |
 | 9 | **全局模块表** | `window.comfyAPI` 暴露 12 个模块：`api / app / changeTracker / controlWidgetMarker / defaultGraph / domWidget / pnginfo / promotedWidgetControl / ui / utils / valueControl / widgets`（`scripts/*.js` 均为转发层）。**其中无 i18n** | 取用官方实现；明确 i18n 需自建 |
-| 10 | **值控制控件** | `window.comfyAPI.widgets.addValueControlWidgets`（实现于 `src/scripts/widgets.ts:113`）：combo 控件，选项 `fixed/increment/decrement/randomize`（combo 目标额外 `increment-wrap`），`serialize:false` + `canvasOnly:true`，以 `IS_CONTROL_WIDGET` 标记并挂到宿主 `linkedWidgets`；队列时由 `src/scripts/valueControl.ts` `nextValueForLinkedTarget` 计算新值；生效时机受设置 `Comfy.WidgetControlMode` 控制 | **FR-8** 随机化补齐 |
+| 10 | **值控制控件** | 由控件构造器自动添加：`inputSpec.control_after_generate` 为真，**或** `inputSpec.name ∈ ['seed','noise_seed']`；combo 控件选项 `fixed/increment/decrement/randomize`（combo 目标额外 `increment-wrap`），默认 `randomize`；`serialize:false` + `canvasOnly:true`，以 `IS_CONTROL_WIDGET` 标记并挂到宿主 `linkedWidgets`；队列时由 `src/scripts/valueControl.ts` `nextValueForLinkedTarget` 计算新值；生效时机受设置 `Comfy.WidgetControlMode` 控制。`PrimitiveNode._createWidget` 中的同名分支为**兜底**（避免重复添加） | **FR-8 原生已满足**（无需实现） |
 | 11 | **规格合并校验** | `src/utils/nodeDefUtil.ts:120` `mergeInputSpec`：类型须完全相同（INT/FLOAT 不互通）；数值型要求范围重叠，合并 `min=max(min1,min2)`、`max=min(max1,max2)`、`step=lcm(step1,step2)`；combo 取选项交集，空交集返回 null；其余除 `IGNORE_KEYS` 外所有键须一致。`mergeIfValid` 内对值做越界钳制 | **FR-7** 提示级校验依据 |
 | 12 | **多选行为** | `src/composables/graph/useMoreOptionsMenu.ts:180`：仅当 `selectedNodes.length === 1` 时才调用 `canvas.getNodeMenuOptions(node)` → 多选时 `getExtraMenuOptions` 不被调用 | FR-1 边界（多选不出现） |
 
@@ -247,9 +247,14 @@ inputNode.addProperty("betterNode", { role: "paramInput", param: param.name, v: 
 - **下拉框**：连接后由 `refreshComboInNode` 从目标参数规格同步选项，无需自行填充。
 - **序列化**：PrimitiveNode 为虚拟节点且 `serialize_widgets = true`；`properties.betterNode` 会随工作流序列化，用于重载后的复用索引与状态标识。
 - **撤销/重做**：建节点与连线前后调用 `graph.beforeChange()` / `graph.afterChange()`。
-- **FR-8 随机化补齐**：连接完成后检查入参节点是否已具备值控制控件（判定：`widgets` 中存在带 `IS_CONTROL_WIDGET` 标记、且 `linkedWidgets` 指向主 widget 的 combo）。若缺失，调用 `window.comfyAPI.widgets.addValueControlWidgets(node, mainWidget, 'fixed', undefined, inputSpec)` 补齐，并设置 `mainWidget.linkedWidgets = [controlWidget]`。
-  - ⚠️ 原生行为存在语义反直觉之处：PrimitiveNode 添加该控件的条件是 `!inputData[1].control_after_generate`，因此声明了 `control_after_generate` 的参数（如 KSampler 的 `seed`）**不自带**，未声明的（如 `steps`）反而自带。**该行为须在 P0 阶段实测确认**，补齐逻辑对两种情况都必须幂等（已有则不重复添加）。
-  - 补齐时 `defaultValue` 传 `'fixed'`，避免改变现有取值行为。
+- **FR-8 随机化能力：实测确认无需实现。**
+  - 值控制控件（`fixed` / `increment` / `decrement` / `randomize`）由**控件构造器**自动添加，条件为：
+    `inputSpec.control_after_generate` 为真，**或** `inputSpec.name` 属于 `['seed', 'noise_seed']`；
+    默认模式 `randomize`。
+  - `PrimitiveNode._createWidget` 中 `!inputData[1].control_after_generate` 的分支是**兜底**，
+    仅在目标参数未声明时补一个控件，避免与构造器重复添加。
+  - 因此数字型与下拉型入参节点**原生即具备**该控件，插件不写补齐代码，仅按 AC-15 验收。
+  - 实测验证：前端 1.47.12，`入参·noise_seed` 节点上已正确出现「生成后控制」。
 
 ### 5.6 复用索引（FR-5）
 
@@ -351,7 +356,7 @@ function assessParam(node, param) {
 | 级别 | 风险 | 缓解 |
 |---|---|---|
 | P0 | 从菜单启动的起线缺少指针生命周期钩子，可能无法落点 | 编码前最小验证；四级降级链（§5.4.3），FR-3b 兜底 |
-| P0 | FR-8 依赖原生值控制控件的添加条件，该条件语义反直觉 | P0 阶段一并实测 `seed` 与 `steps` 两种情况；补齐逻辑幂等，两种结果下都正确 |
+| ~~P0~~ 已解决 | ~~FR-8 依赖原生值控制控件的添加条件，该条件语义反直觉~~ | **2026-09-17 实测已确认**：控件由构造器自动添加，原生完整覆盖，插件无需实现 |
 | P1 | `_linkConnectorDrop` / `linkConnector` / `showConnectionMenu` 为内部或非契约方法，版本升级易失效 | 收敛到 `compat` 层，集中访问 + 探测 + 降级 |
 | P1 | 依赖 `PrimitiveNode` 的内部行为（惰性 widget、合并规则） | 只依赖其对外可观测行为，不自研同步；升级时以 AC 回归验证 |
 | P1 | 插件间 `getExtraMenuOptions` 冲突 | 强制链式包装（`chain(prev, next)`），绝不直接赋值；加入共存回归用例 |
