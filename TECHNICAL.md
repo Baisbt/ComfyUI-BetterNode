@@ -2,10 +2,10 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | v1.3 |
+| 文档版本 | v1.4 |
 | 状态 | 待审阅 |
 | 关联文档 | `DESIGN.md`（产品设计）、`AGENTS.md`（开发约束） |
-| 变更记录 | v1.1 新增 FR-3 双入口、FR-7 校验与中英引导、FR-8 随机化能力；补 §5.8 guards、§5.9 i18n<br>v1.2 §5.4 重写，起线拖拽实测否决（§5.4.1 记录根因）<br>v1.3 **FR-3 整体下线**：删除 `showSourceMenu.js` 与相关探测；§5.4 改为下线记录（保留 §5.4.1 根因与 §5.4.2 用法追溯）；同步目录、机制表、能力探测、风险、测试矩阵、未决问题 |
+| 变更记录 | v1.1 新增 FR-3 双入口、FR-7、FR-8；补 §5.8 guards、§5.9 i18n<br>v1.2 §5.4 重写，起线拖拽实测否决<br>v1.3 FR-3 整体下线，删除 `showSourceMenu.js`<br>v1.4 **§5.6 引入同义组复用键**（新增 `synonyms.js`）、复用明细字段；**新增 §5.10 批量外置（FR-9）**；同步测试矩阵与未决问题 |
 
 ---
 
@@ -62,7 +62,8 @@ ComfyUI-BetterNode/
 │   │   └── buildMenu.js     # 构建「输入参数」二级菜单；文案/状态/点击分发
 │   ├── params/
 │   │   ├── enumerate.js     # 参数枚举、分类、当前值/选项读取
-│   │   └── guards.js        # 支持范围判定（返回原因键，文案由 i18n 解析）
+│   │   ├── guards.js        # 支持范围判定（返回原因键，文案由 i18n 解析）
+│   │   └── synonyms.js      # 同义组：参数名 -> 复用键（人工白名单，禁止自动归并）
 │   ├── actions/
 │   │   └── createInputNode.js # FR-4/FR-5/FR-6 入参节点工厂、复用索引、状态查询
 │   ├── i18n/
@@ -285,19 +286,33 @@ inputNode.addProperty("betterNode", { role: "paramInput", param: param.name, v: 
 
 ### 5.6 复用索引（FR-5）
 
-**复用键**：参数名（`param.name`，大小写敏感），并叠加一层 `owner` 归属区分。
+**复用键**：`reuseKeyOf(paramName)`（`web/params/synonyms.js`）——参数名经**同义组**归并后的键；
+不在任何组内时即参数名本身。另叠加一层 `owner` 归属区分。
 
 入参节点通过 `node.properties.betterNode` 自我描述（`properties` 会被序列化，见 §5.7）：
 
 | 字段 | 含义 |
 |---|---|
 | `role` | 固定 `"paramInput"`，标识本插件创建 |
-| `param` | 所属参数名，即复用键 |
+| `param` | 创建时的**原始参数名** |
 | `owner` | 归属目标节点 id。**缺省 = 共享节点**；有值 = 专属于该目标的**专用节点** |
+
+> ⚠️ **不存 key 字段**：复用键一律由 `marker.param` **现算**。
+> 这样新增同义组后，旧工作流里已存在的节点也能被正确归并，**无需迁移数据**。
+
+#### 同义组（`synonyms.js`）
+
+`seed` 与 `noise_seed` 归入同一组（已核实：两者在 `nodes.py` 中传给 `common_ksampler`
+的**同一个参数位**，且规格逐字相同）。
+
+- **加组规则（硬约束）**：必须**人工确认**语义等价，核实「是否传给同一参数位」+「输入规格是否一致」两点。
+  **禁止按名称相似度自动归并。**
+- 组内合并仍由原生 `mergeInputSpec` 校验；不兼容时自动落到专用节点机制，不会污染既有目标。
+- 注意点：`KSamplerAdvanced` 在 `add_noise = disable` 时忽略 `noise_seed`，UI 文案需保留提示。
 
 #### 两类节点与查找顺序
 
-1. **专用节点**（`owner === 当前目标节点 id`）—— 命中即视为已完成，直接返回"已外置"。
+1. **专用节点**（`owner === 当前目标节点 id`）—— 命中即视为已完成，返回"已外置"。
 2. **共享节点**（`owner` 缺省）—— 可跨目标复用：
    - 若已连到当前目标槽 → 返回"已外置"；
    - 否则尝试 `connect()` 走原生合并：
@@ -317,10 +332,33 @@ inputNode.addProperty("betterNode", { role: "paramInput", param: param.name, v: 
 首次点击新建专用节点，后续点击直接命中，既不膨胀也不重复告警。
 （该路径已由 `tests/run.mjs` 的"专用节点建立后重复点击保持稳定"用例覆盖。）
 
-#### 状态查询
+#### 复用明细（FR-6）
 
-`getExternalizeStatus(graph, paramName, targetNode, slotIndex)` 供 FR-6 使用，
-返回 `externalized` / `reusable` / `null`，规则与上述查找顺序一致。
+`getExternalizeDetail(graph, param, targetNode, slotIndex)` 供菜单使用，返回：
+
+| 字段 | 含义 |
+|---|---|
+| `status` | `externalized`（已连到本节点）/ `reusable`（有节点未连接）/ `null`（无节点） |
+| `count` | 该入参节点当前连接的目标总数（`outputs[0].links.length`） |
+| `viaGroup` | 命中的节点是为**同义组内另一个参数名**创建的（`marker.param !== param.name`） |
+| `node` | 命中的入参节点 |
+
+**显示通道限制**：`convertContextMenuToOptions` 会丢弃 `title` / `className`，
+且 `MenuOption` 无 tooltip 字段 —— 明细**只能压进条目文案后缀**。
+因此有意未纳入：节点标题、控件类型、当前取值（这些在节点自身上可见）。
+
+### 5.10 批量外置（FR-9）
+
+`externalizeAll(targetNode, params)`：
+
+- 遍历参数逐个调用 `createOrReuseInputNode`，但传入 `{ skipTransaction: true }` 跳过单次事务包裹；
+- 整个批次由**一次** `graph.beforeChange()` / `graph.afterChange()` 包裹 ——
+  这是"一次 Ctrl+Z 整体回退"的实现基础；
+- 用 `try/finally` 保证异常时 `afterChange` 仍会执行，避免事务悬挂；
+- 返回汇总 `{ok, created, reused, already, failed[]}`，由菜单层转成提示文案。
+
+**待处理集合的判定**（在 `buildMenu.js`）：参数通过 `combineVerdicts` 判定可用、
+且 `getExternalizeDetail().status !== 'externalized'` 时纳入。集合为空则**不注入批量入口**。
 
 ### 5.7 序列化与重载
 
@@ -443,6 +481,11 @@ function assessParam(node, param) {
 | T-13 | 原生文件比对 | AC-10 | 无任何原生文件改动 |
 | T-14 | 菜单文案是否已去掉分组后缀 | FR-2 | 形如 `种子 · 已外置`、`步数` |
 | T-15 | 已连线的内部参数槽再次点击 | FR-5 | 行为稳定，不产生重复节点 |
+| T-16 | KSampler 点 `seed` → KSamplerAdvanced 点 `noise_seed` | FR-5、AC-19 | 复用同一节点，后者标注「同义组共用」 |
+| T-17 | 一个入参节点连多个目标后重开菜单 | FR-6、AC-20 | 条目出现 `×N` |
+| T-18 | 点击「全部外置」 | FR-9、AC-21 | 全部内部参数接上；**一次 Ctrl+Z 整体回退** |
+| T-19 | 全部已外置后再打开菜单 | FR-9、AC-22 | 批量入口消失 |
+| T-20 | 部分已外置时打开菜单 | FR-9 | 批量入口只统计待处理数 |
 | T-16 | `socketless` 参数 / 子图节点 / 自定义 widget | FR-7、§6.1、AC-12 | 置灰且原因文案正确 |
 | T-17 | 制造合并钳制（范围不同的两个节点同名参数） | FR-7、AC-13 | 出现原因提示，非静默 |
 | T-18 | 合并被拒（INT 与 FLOAT / 范围无交集） | FR-7 | 改为新建节点并提示 |
@@ -471,12 +514,13 @@ node tests/run.mjs
 ```
 
 - **原理**：插件内部使用 `../../scripts/app.js` 这类相对路径导入前端模块。测试脚本在系统临时目录中还原出与浏览器一致的结构（`<sandbox>/scripts/app.js` + `<sandbox>/extensions/ComfyUI-BetterNode/`），因此**相对路径深度与真实运行时完全相同**，可顺带验证导入路径是否正确。
-- **已覆盖**：菜单结构与参数过滤（FR-1/FR-2）、入参节点创建（FR-4）、复用与一对多（FR-5）、
-  参数状态标识（FR-6）、校验与提示级告警（FR-7）、置灰判定（FR-7 阻断级 / §6.1）、
+- **已覆盖**：菜单结构与参数过滤（FR-1/FR-2）、入参节点创建（FR-4）、复用与一对多及同义组（FR-5）、
+  复用明细（FR-6）、批量外置（FR-9）、校验与提示级告警（FR-7）、置灰判定（FR-7 阻断级 / §6.1）、
   无内部参数节点不注入菜单、中英双语文案与字典键一致性（§5.9）、
-  链式挂载与其他扩展共存及异常隔离（§5.1）。当前 **29 项断言**。
+  链式挂载与其他扩展共存及异常隔离（§5.1）。当前 **36 项断言**。
 - **不覆盖**：真实画布渲染、原生 `PrimitiveNode` 的取值拷贝与下拉选项同步、
-  `extensionManager.toast` 的真实可用性——这些仍需在 ComfyUI 中按 §9.1 手工验证。
+  `extensionManager.toast` 的真实可用性、批量外置在真机上的撤销行为——
+  这些仍需在 ComfyUI 中按 §9.1 手工验证。
 
 ---
 
@@ -488,15 +532,20 @@ node tests/run.mjs
 2. ~~子图节点适配~~ → 已定为 v1 不支持，**列出但全部置灰并说明原因**。
 3. ~~入参节点标题格式~~ → 已定为 `入参·<参数名>`；标题属数据而非 UI 文案，**不纳入 i18n**。
 4. ~~英文文案的参数名~~ → 参数名一律沿用前端提供的 `widget.label`（核心 i18n 已在英文环境给出英文名），插件不另行翻译。
+5. ~~`seed` 与 `noise_seed` 是否同一复用键~~ → **已定为同一同义组**（人工白名单，见 §5.6）。
+6. ~~是否需要批量外置入口~~ → **已定为新增 FR-9**（见 §5.10）。
+7. ~~复用明细如何呈现~~ → 已定为**条目文案后缀**（显示通道限制见 §5.6）；节点标题/类型/取值有意不纳入。
+8. ~~是否加调试入口~~ → **不加**。等实际遇到错误时按现象定位。
 
 **仍开放**
 
-1. 是否将语义等价的参数（如 `seed` 与 `noise_seed`）纳入同一复用键？现方案按参数名严格匹配。
-2. 「合并被拒」提示在核心节点中难以构造复现场景，**尚未真实验证**（逻辑已有单元测试覆盖）。
-   若后续需要，可加一个仅控制台可用的调试入口来强制触发。
-3. 是否需要"一键外置该节点全部内部参数"的批量入口。
-4. 一个参数出现"共享节点 + 多个专用节点"时，菜单是否应展示更细的复用明细。
-5. **菜单内连线能力已下线**，不在计划内。若将来重启，需先解决 §5.4.1 的指针机制问题，并重新评估交互形式。
+1. 一个参数同时存在「共享节点 + 多个专用节点」时，菜单是否需展示更细的复用明细。
+2. **菜单内连线能力已下线**，不在计划内。若将来重启，需先解决 §5.4.1 的指针机制问题，并重新评估交互形式。
+
+**未验证（非未开发）**
+
+- 「合并被拒」提示路径逻辑已有单元测试覆盖，但**真机未验证**——核心节点中难以构造复现场景。
+- 批量外置的**撤销行为**（一次 Ctrl+Z 整体回退）仅有逻辑保证，待真机确认。
 
 ---
 
@@ -522,3 +571,4 @@ node tests/run.mjs
 | `src/renderer/utils/nodeTypeGuards.ts` | `isPrimitiveNode` |
 | `static/scripts/*.js` | `window.comfyAPI` 转发层，可确认对外暴露模块清单（**无 i18n**） |
 | `ComfyUI/nodes.py:1580` | KSampler 输入定义（`:1586` seed 声明 `control_after_generate`） |
+| `ComfyUI/nodes.py:1609` | KSamplerAdvanced 定义（`:1615` noise_seed；`:1634` sample 中两者传给 `common_ksampler` 的同一参数位 —— **同义组依据**） |

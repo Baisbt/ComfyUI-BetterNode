@@ -9,14 +9,19 @@ export const zh = {
   // 菜单
   "menu.title": "输入参数",
 
-  // 参数状态（FR-6）
+  // 参数状态（FR-6 复用明细）
   "status.externalized": "已外置",
   "status.reusable": "可复用",
+  "status.targets": "×{count}",
+  "status.shared": "同义组共用",
 
   // 文案模板
   "label.item": "{name}",
   "label.itemWithStatus": "{name} · {status}",
   "label.unavailable": "{name}（不可用：{reason}）",
+
+  // 批量外置（FR-9）
+  "action.externalizeAll": "全部外置（{count} 个待处理）",
 
   // 阻断级原因（FR-7）
   "deny.noNode": "节点不存在",
@@ -31,6 +36,7 @@ export const zh = {
   // 提示级（FR-7）
   "warn.valueClamped": "「{name}」的取值范围已与已有入参节点收敛，取值由 {from} 调整为 {to}",
   "warn.mergeRejected": "「{name}」与已有入参节点的类型或取值范围不兼容，已改为新建独立入参节点",
+  "warn.batchFailed": "批量外置有 {count} 个参数失败，详见控制台",
 
   // 操作失败原因（FR-7 说明级）
   "reason.noGraph": "画布未就绪",
@@ -49,6 +55,7 @@ export const zh = {
   "info.created": "已为「{name}」创建入参节点",
   "info.reused": "已复用「{name}」的入参节点",
   "info.already": "「{name}」已外置，无需重复操作",
+  "info.batchResult": "批量外置完成：新建 {created} 个、复用 {reused} 个、跳过 {skipped} 个",
   "info.channel": "提示通道：{channel}",
   "info.language": "语言：{lang}",
 };

@@ -9,14 +9,19 @@ export const en = {
   // Menu
   "menu.title": "Input Parameters",
 
-  // Parameter status (FR-6)
+  // Parameter status (FR-6 reuse detail)
   "status.externalized": "externalized",
   "status.reusable": "reusable",
+  "status.targets": "×{count}",
+  "status.shared": "shared via group",
 
   // Label templates
   "label.item": "{name}",
   "label.itemWithStatus": "{name} · {status}",
   "label.unavailable": "{name} (unavailable: {reason})",
+
+  // Batch externalize (FR-9)
+  "action.externalizeAll": "Externalize all ({count} pending)",
 
   // Blocking reasons (FR-7)
   "deny.noNode": "node not found",
@@ -31,6 +36,7 @@ export const en = {
   // Warnings (FR-7)
   "warn.valueClamped": "\"{name}\" had its range narrowed by the existing input node; value changed from {from} to {to}",
   "warn.mergeRejected": "\"{name}\" is not type/range compatible with the existing input node; a dedicated input node was created instead",
+  "warn.batchFailed": "{count} parameter(s) failed during batch externalize; see the console",
 
   // Operation failure reasons (FR-7)
   "reason.noGraph": "the canvas is not ready",
@@ -49,6 +55,7 @@ export const en = {
   "info.created": "created an input node for \"{name}\"",
   "info.reused": "reused the existing input node for \"{name}\"",
   "info.already": "\"{name}\" is already externalized; nothing to do",
+  "info.batchResult": "batch externalize done: {created} created, {reused} reused, {skipped} skipped",
   "info.channel": "notification channel: {channel}",
   "info.language": "language: {lang}",
 };
