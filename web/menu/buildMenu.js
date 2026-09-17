@@ -6,11 +6,10 @@
  */
 
 import { enumerateParams, groupParams } from "../params/enumerate.js";
-import { assessNode, assessParam, combineVerdicts } from "../params/guards.js";
+import { assessNode, assessParam, combineVerdicts, deny } from "../params/guards.js";
 import { createOrReuseInputNode, getExternalizeStatus } from "../actions/createInputNode.js";
-import { startLinkDrag, canStartLinkDrag } from "../actions/startLinkDrag.js";
 import { showSourceMenu } from "../actions/showSourceMenu.js";
-import { canLinkParam, canCreateInputNode, canShowSourceMenu } from "../compat/capability.js";
+import { canShowSourceMenu, canCreateInputNode } from "../compat/capability.js";
 import { t, hasKey, resetLang } from "../i18n/index.js";
 import { notifyInfo, notifyWarn, notifyError } from "../ui/notify.js";
 
@@ -47,31 +46,21 @@ function linkParamStatus(param) {
   return connected ? "connected" : null;
 }
 
-/** FR-3 点击处理：先试起线拖拽态（FR-3a），不可用时回退来源菜单（FR-3b） */
+/**
+ * FR-3 点击处理：弹出"选择来源节点"菜单。
+ *
+ * 说明：曾实现过"起线拖拽态"（dragNewFromInput），但实测无法落点。
+ * 根因是原生落点依赖 pointerdown 记录的 eDown，菜单点击没有这个动作，
+ * 导致 onDragEnd 永不触发；合成指针序列也无法绕过（详见 TECHNICAL §5.4）。
+ * 因此本操作只保留来源菜单这一条路径。
+ */
 function onLinkParamClick(node, param) {
-  if (canStartLinkDrag()) {
-    const result = startLinkDrag(node, param.index);
-    if (result.ok) {
-      notifyInfo(t("info.dragStarted"));
-      return;
-    }
-    // 已在连线中 / 槽不存在 / 抛错 → 不再尝试其他入口，直接说明原因
-    if (result.reason !== "unsupported") {
-      notifyError(t("error.dragFailed", { name: param.label, reason: reasonText(result.reason) }));
-      return;
-    }
-  }
+  const result = showSourceMenu(node, param.index);
+  if (result.ok) return;
 
-  if (canShowSourceMenu()) {
-    const result = showSourceMenu(node, param.index);
-    if (result.ok) return;
-    notifyError(
-      t("error.sourceMenuFailed", { name: param.label, reason: reasonText(result.reason) })
-    );
-    return;
-  }
-
-  notifyError(t("deny.dragUnsupported"));
+  notifyError(
+    t("error.sourceMenuFailed", { name: param.label, reason: reasonText(result.reason) })
+  );
 }
 
 /** FR-4 / FR-5 / FR-7 点击处理：创建或复用入参节点 */
@@ -124,7 +113,7 @@ export function buildInputParamsMenu(node, canvas, options) {
 
   const { link, widget } = groupParams(params);
   const graph = node.graph;
-  const linkReady = canLinkParam();
+  const sourceMenuReady = canShowSourceMenu();
   const inputNodeReady = canCreateInputNode();
   const items = [];
 
@@ -133,7 +122,7 @@ export function buildInputParamsMenu(node, canvas, options) {
     const verdict = combineVerdicts(
       nodeVerdict,
       assessParam(param),
-      linkReady ? null : { ok: false, reason: "unsupported" }
+      sourceMenuReady ? null : deny("linkUnsupported")
     );
     items.push({
       content: buildLabel(param, "group.link", verdict, linkParamStatus(param)),
@@ -147,7 +136,7 @@ export function buildInputParamsMenu(node, canvas, options) {
     const verdict = combineVerdicts(
       nodeVerdict,
       assessParam(param),
-      inputNodeReady ? null : { ok: false, reason: "noPrimitiveNode" }
+      inputNodeReady ? null : deny("noPrimitiveNode")
     );
     const status = verdict.ok
       ? getExternalizeStatus(graph, param.name, node, param.index)

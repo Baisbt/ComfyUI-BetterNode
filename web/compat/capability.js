@@ -7,37 +7,19 @@
 
 import { app } from "../../../scripts/app.js";
 
-function getCanvas() {
-  return app?.canvas;
+/**
+ * FR-3：是否可弹出"选择来源节点"菜单。
+ *
+ * 注：原先还提供过"起线拖拽态"入口（canvas.linkConnector.dragNewFromInput），
+ * 实测无法落点，已移除。原因见 TECHNICAL §5.4。
+ */
+export function canShowSourceMenu() {
+  return typeof app?.canvas?.showConnectionMenu === "function";
 }
 
 /** 是否可创建入参节点：依赖内置虚拟节点 PrimitiveNode */
 export function canCreateInputNode() {
   return Boolean(globalThis.LiteGraph?.registered_node_types?.PrimitiveNode);
-}
-
-/** FR-3a：是否可进入起线拖拽态 */
-export function canStartLinkDrag() {
-  const canvas = getCanvas();
-  if (!canvas) return false;
-  if (typeof canvas.linkConnector?.dragNewFromInput !== "function") return false;
-  // 拖拽需要指针对象承载 onDragEnd / finally 钩子
-  return Boolean(canvas.pointer);
-}
-
-/** 是否可手动注册拖拽落点钩子（_linkConnectorDrop 为 TS private，运行时可用） */
-export function hasDropHook() {
-  return typeof getCanvas()?._linkConnectorDrop === "function";
-}
-
-/** FR-3b：是否可弹出来源选择菜单 */
-export function canShowSourceMenu() {
-  return typeof getCanvas()?.showConnectionMenu === "function";
-}
-
-/** 是否具备「可连线参数」的任一可用入口 */
-export function canLinkParam() {
-  return canStartLinkDrag() || canShowSourceMenu();
 }
 
 /**

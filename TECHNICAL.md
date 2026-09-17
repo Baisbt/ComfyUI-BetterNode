@@ -2,10 +2,10 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | v1.1 |
+| 文档版本 | v1.2 |
 | 状态 | 待审阅 |
 | 关联文档 | `DESIGN.md`（产品设计）、`AGENTS.md`（开发约束） |
-| 变更记录 | v1.1 新增 FR-3 双入口、FR-7 校验与中英引导、FR-8 随机化能力、v1 支持范围；补 §5.8 guards、§5.9 i18n |
+| 变更记录 | v1.1 新增 FR-3 双入口、FR-7 校验与中英引导、FR-8 随机化能力、v1 支持范围；补 §5.8 guards、§5.9 i18n<br>v1.2 **§5.4 重写**：起线拖拽实测否决（§5.4.1 记录根因），FR-3 收敛为来源菜单单入口；同步目录结构、机制表、能力探测、风险、测试矩阵、未决问题 |
 
 ---
 
@@ -64,8 +64,7 @@ ComfyUI-BetterNode/
 │   │   ├── enumerate.js     # 参数枚举、分类、当前值/选项读取
 │   │   └── guards.js        # 支持范围判定（返回原因键，文案由 i18n 解析）
 │   ├── actions/
-│   │   ├── startLinkDrag.js # FR-3a 起线拖拽态
-│   │   ├── showSourceMenu.js# FR-3b 选择来源节点
+│   │   ├── showSourceMenu.js# FR-3 选择来源节点（唯一入口）
 │   │   └── createInputNode.js # FR-4/FR-5/FR-6 入参节点工厂、复用索引、状态查询
 │   ├── i18n/
 │   │   ├── index.js         # 语言判定（读 Comfy.Locale）+ 查表 + 缺键回退
@@ -96,7 +95,7 @@ ComfyUI-BetterNode/
 | 2 | 二级菜单 | `{ content, has_submenu: true, submenu: { options: [...] } }`（`LGraphCanvas.ts:8778`、`src/composables/graph/contextMenuConverter.ts:428`） | FR-1 子菜单 |
 | 3 | widget 与 socket 共存 | `src/extensions/core/widgetInputs.ts:519`：`convertWidgetToInput` 已废弃为空操作；`src/stores/nodeDefStore.ts` `_migrateDefaultInput` 注释确认 required 输入的槽恒存在 | FR-2 分类判据 |
 | 3b | widget 输入槽的创建 | `src/services/litegraphService.ts` `addInputWidget`：`node.addInput(name, spec.type, { widget: { name, [GET_CONFIG]: () => specV1 } })`；`forceInput` 与 `socketless` 除外 | FR-2 分类判据 |
-| 4 | 起线 | `src/lib/litegraph/src/linkConnector.ts:412` `dragNewFromInput(network, node, input, fromReroute?)`；鼠标按下输入槽时调用位置 `LGraphCanvas.ts:2871`，**紧随其后必须调用 `this._linkConnectorDrop()`**（`LGraphCanvas.ts:2874`） | FR-3 |
+| 4 | ~~起线拖拽~~ | **已实测否决并移除**。`linkConnector.dragNewFromInput()` 只能产生连线动画，无法落点——原生落点依赖 `pointerdown` 记录 `eDown`，菜单点击没有这个动作，合成指针序列也无法绕过。详见 **§5.4.1** | 反例参考（勿重试） |
 | 5 | 入参节点 | `src/extensions/core/widgetInputs.ts:31` `class PrimitiveNode`（`isVirtualNode = true`、`serialize_widgets = true`）；注册于同文件 `registerCustomNodes()` | FR-4 / FR-5 |
 | 5a | 自动取值 | `PrimitiveNode._createWidget`：`widget.value = theirWidget.value` | FR-4 值为当前值 |
 | 5b | 下拉选项同步 | `PrimitiveNode.refreshComboInNode`：从 `outputs[0].widget[GET_CONFIG]()[0]` 取选项 | FR-4 下拉框 |
@@ -186,41 +185,66 @@ function enumerateParams(node) {
 - **下拉选项**：`widget.options?.values`（用于 FR-6 状态展示与显示校验，实际选项同步由 PrimitiveNode 负责）。
 - **高级/隐藏参数**：`widget.options?.advanced` / `widget.options?.hidden` 仅用于展示标记，不额外过滤。
 
-### 5.4 FR-3 双入口实现
+### 5.4 FR-3 可连线参数：选择来源节点（唯一入口）
 
-#### 5.4.1 FR-3a 起线拖拽态（主入口，P0 待验证）
-
-```js
-canvas.linkConnector.dragNewFromInput(canvas.graph, node, input);
-canvas._linkConnectorDrop();   // 注册 pointer.onDragEnd / pointer.finally
-canvas.dirty_bgcanvas = true;
-```
-
-- `_linkConnectorDrop()` 是 TS `private`，但运行时可用；其作用是注册 `pointer.onDragEnd = dropLinks` 与 `pointer.finally = reset`，并启动自动平移（`LGraphCanvas.ts:2113-2140`）。**缺此步会导致拖拽无法结束**。
-- `canvas.pointer` 在画布构造时创建一次（`LGraphCanvas.ts:838`），为长生命周期对象，这是本方案可行的前提。
-- 调用前须检查 `linkConnector.isConnecting`，为真时提示用户并中止（`dragNewFromInput` 在已连线时会 throw）。
-- **粘性拖拽语义**：由菜单触发时鼠标左键并未按下，连线跟随鼠标移动直到下一次点击落点。该手感与"按住拖拽"不同，须在文案中提示。
-
-#### 5.4.2 FR-3b 选择来源节点（备选入口，等效）
+**实现**：复用官方公开方法 `canvas.showConnectionMenu({ nodeTo, slotTo, e })`，
+即原生"把连线拖到空白处"弹出的来源菜单，选中来源即建链。
 
 ```js
-canvas.showConnectionMenu({ nodeTo: node, slotTo: input, e: mouseEvent });
+canvas.showConnectionMenu({
+  nodeTo: targetNode,
+  slotTo: slotIndex,          // 传下标而非槽对象，避免同名槽歧义
+  e: makePositionEvent(...),  // 菜单定位需要 clientX/clientY
+});
 ```
 
-- 直接复用官方公开方法，产出原生「Add Node / Add Reroute / Search」来源菜单，**不依赖指针拖拽生命周期**。
-- 需要构造一个 `MouseEvent`（用于菜单定位）；可用菜单项点击事件对象或 `canvas.graph_mouse` 折算后的合成事件。
-- 若 `dragNewFromInput` 不可用（能力探测失败），自动改用本入口。
+- 定位事件优先复用真实的 `contextmenu` 事件（菜单回调拿不到 MouseEvent，
+  需在 `installContextMenuTracker` 中于交互发生时先行捕获），
+  缺失时按 `canvas.graph_mouse` 与 `ds.scale/offset` 折算。
+- `MouseEvent` 不可用的环境退化为携带坐标的普通对象。
+- 能力缺失时条目置灰并说明原因，不做静默失败。
 
-#### 5.4.3 降级链
+#### 5.4.1 为什么不做「起线拖拽态」（已实测否决，请勿重试）
 
-| 顺序 | 手段 | 触发条件 |
-|---|---|---|
-| 1 | FR-3a `dragNewFromInput` + `_linkConnectorDrop()` | 能力探测通过 |
-| 2 | FR-3a 变体：合成 `pointerdown → pointermove` 事件序列走原生路径 | 方案 1 落点失败 |
-| 3 | FR-3b `showConnectionMenu`（始终可用，作为兜底） | 方案 1、2 均不可用 |
-| 4 | 菜单项置灰 + 说明原因 | 全部不可用 |
+**结论**：从节点菜单触发的原生拖拽**无法完成落点**，只能看到连线动画。
+该方案已实测否决并从代码中移除。根因如下：
 
-> **P0 验证点**：编码前先用最小脚本验证方案 1 能否完成"起线 → 命中输出槽 → 落点成链 → 取消也可复位"完整闭环，并确认方案 3 独立可用。验证结论同步回写本节与 `DESIGN.md`。
+1. **原生落点依赖 pointerdown。** `CanvasPointer.up(e)` 首行即
+   `if (e.button !== this.eDown?.button) return false`；`_completeClick(e)` 首行
+   `const { eDown } = this; if (!eDown) return`。
+   而 `eDown` **只在 `pointer.down(e)` 中赋值**，`pointer.down` 又只由画布的
+   `processMouseDown` 调用（`LGraphCanvas.ts:2284`）。
+   从菜单点击启动拖拽时从未发生 pointerdown → `eDown` 为空 → `onDragEnd` 永不触发
+   → `linkConnector.dropLinks()` 永不被调用 → 连线建立不起来。
+   （看到的"连线跟随鼠标"是 `linkConnector.isConnecting` 状态被绘制的结果，
+   与落点逻辑无关。）
+
+2. **合成指针序列也无法绕过。** `CanvasPointer.move(e)`：
+   - `if (!eDown) return`
+   - `if (!e.buttons) { this.reset(); return }`
+
+   合成的 pointerdown 无法让用户"物理按住鼠标键"，用户随后的任何真实
+   `pointermove`（`buttons === 0`）都会立即 `reset()`，把状态清空。
+   即设计早期设想的"降级方案 2：合成 pointerdown → pointermove 序列"同样不成立。
+
+3. **保留 `isConnecting` 还会引入异常。** 画布的输出槽 mousedown 分支
+   （`LGraphCanvas.ts:2808-2820`）**没有 `isConnecting` 判断**，会无条件调用
+   `linkConnector.dragNewFromOutput()`；而该方法在已连线状态下会
+   `throw new Error('Already dragging links.')`。所以"保持待连线态、让用户点目标输出槽"
+   这条替代路也会先抛异常。
+
+**若要重新支持拖拽手感**，需要自行实现输出槽命中判定（核心的判定逻辑内联在
+`processMouseDown` 中，未对外暴露），并按 `node.connect()` 建链，同时自行处理
+类型校验与 Reroute 等分支 —— 属独立课题，需单独立项评估。
+
+#### 5.4.2 能力不可用时的降级
+
+| 情况 | 行为 |
+|---|---|
+| `canvas.showConnectionMenu` 缺失 | 该组条目全部**置灰**，文案说明"当前前端版本不支持从菜单连线，请手动拖线到该参数上" |
+| 调用抛错 | 错误级提示，附带原因 |
+
+> 原生替代：用户仍可手动把连线拖到参数槽上；ComfyUI 原生也支持双击 widget 输入槽自动挂载 Primitive 节点。
 
 ### 5.5 入参节点工厂（FR-4）
 
@@ -370,10 +394,8 @@ function assessParam(node, param) {
 |---|---|---|
 | 前端版本 | 读取前端暴露的版本信息 | 非 1.47.x 时提示"未验证版本"，功能仍尝试启用 |
 | 菜单扩展点 | `LGraphNode.prototype.getExtraMenuOptions` 是否存在 | 缺失 → 整体禁用，控制台说明原因 |
-| 入参节点 | `window.LiteGraph.registered_node_types.PrimitiveNode` | 缺失 → 禁用 FR-4/FR-5/FR-8，FR-3 仍可用 |
-| 起线能力 | `canvas.linkConnector?.dragNewFromInput` 是否为函数 | 缺失 → FR-3a 降级为 FR-3b |
-| 指针钩子 | `canvas.pointer` 与 `canvas._linkConnectorDrop` 是否存在 | 缺失 → FR-3a 降级为方案 2/3（§5.4.3），FR-3b 始终可用 |
-| 来源菜单 | `typeof canvas.showConnectionMenu === 'function'` | 缺失 → FR-3 整项置灰 |
+| 入参节点 | `window.LiteGraph.registered_node_types.PrimitiveNode` | 缺失 → 禁用 FR-4/FR-5，FR-3 仍可用 |
+| 来源菜单 | `typeof canvas.showConnectionMenu === 'function'` | 缺失 → FR-3 整组置灰并说明 |
 | 值控制控件 | `window.comfyAPI?.widgets?.addValueControlWidgets` | 缺失 → FR-8 跳过补齐，仅沿用原生能力并提示 |
 | 语言设置 | `app.ui.settings` 可读 | 缺失 → 回退 `navigator.language`，再缺失则用中文 |
 | 提示通道 | `app.extensionManager.toast.add` → `app.ui.dialog.show` → `console` 逐级降级（`web/ui/notify.js`） | 均不可用时仅写控制台。**真实可用通道需实测确认**，首次调用会打印 `[BetterNode] 提示通道：xxx` |
@@ -388,16 +410,16 @@ function assessParam(node, param) {
 
 | 级别 | 风险 | 缓解 |
 |---|---|---|
-| P0 | 从菜单启动的起线缺少指针生命周期钩子，可能无法落点 | 编码前最小验证；四级降级链（§5.4.3），FR-3b 兜底 |
+| ~~P0~~ 已否决 | ~~从菜单启动的起线缺少指针生命周期钩子，可能无法落点~~ | **2026-09-17 实测确认无法落点，方案已整体移除**（§5.4.1） |
 | ~~P0~~ 已解决 | ~~FR-8 依赖原生值控制控件的添加条件，该条件语义反直觉~~ | **2026-09-17 实测已确认**：控件由构造器自动添加，原生完整覆盖，插件无需实现 |
-| P1 | `_linkConnectorDrop` / `linkConnector` / `showConnectionMenu` 为内部或非契约方法，版本升级易失效 | 收敛到 `compat` 层，集中访问 + 探测 + 降级 |
+| P1 | `showConnectionMenu` 为非契约方法，版本升级可能失效 | 收敛到 `compat` 层，集中访问 + 探测 + 置灰降级 |
 | P1 | 依赖 `PrimitiveNode` 的内部行为（惰性 widget、合并规则） | 只依赖其对外可观测行为，不自研同步；升级时以 AC 回归验证 |
 | P1 | 插件间 `getExtraMenuOptions` 冲突 | 强制链式包装（`chain(prev, next)`），绝不直接赋值；加入共存回归用例 |
-| P1 | 前端未暴露 i18n，双语字典需自行维护，易出现缺键 | 字典集中管理 + 缺键回退并告警 + AC-14 覆盖全部文案 |
+| P1 | 前端未暴露 i18n，双语字典需自行维护，易出现缺键 | 字典集中管理 + 缺键回退并告警 + 字典键一致性用例覆盖 |
 | P2 | 子菜单无法分组，长参数列表可读性差 | 文案前缀 + 按节点定义顺序排列；必要时后续改用动态子菜单 |
 | P2 | 菜单项位于「Extensions」分组 | 接受，作为既定交互 |
 | P2 | 跨节点类型合并参数时下拉选项以首个连接为准 | 在文档与提示中说明；必要时限制为同节点类型内复用 |
-| P2 | 粘性拖拽手感与预期不符 | 文案提示 + FR-3b 作为等效替代 |
+| P2 | 合并被拒路径在核心节点中难以触发，未经真实验证 | 逻辑已由单元测试覆盖；待自然遇到或后续补调试入口 |
 | P2 | `socketless` / 自定义 widget / 子图节点无法外置 | 置灰并说明原因（FR-7 阻断级），不做静默隐藏 |
 
 ---
@@ -409,20 +431,20 @@ function assessParam(node, param) {
 | 编号 | 场景 | 覆盖需求 | 预期 |
 |---|---|---|---|
 | T-01 | KSampler 右键，检查菜单与参数清单 | FR-1、FR-2、AC-1、AC-2 | 两组齐全，无 `control_after_generate` |
-| T-02 | 点击 `model` 起线并连到 CheckpointLoader | FR-3、AC-3 | 连线成功 |
+| T-02 | 点击 `model` → 来源菜单选 CheckpointLoader | FR-3、AC-3 | 连线成功 |
 | T-03 | 点击 `seed`，检查入参节点取值 | FR-4、AC-4 | 值等于原 seed |
 | T-04 | 点击 `sampler_name`，比对各选项 | FR-4、AC-5 | 选项完全一致 |
 | T-05 | 一个入参节点连 3 个 KSampler 的 `seed`，改值后运行 | FR-5、AC-6 | 三者同步且生效 |
 | T-06 | 点击第二个 KSampler 的 `seed` | FR-5、AC-7 | 复用既有入参节点 |
 | T-07 | 撤销 / 重做 | §6.4、AC-8 | 状态正确回滚 |
 | T-08 | 保存 → 重载 | §5.7、AC-9 | 节点、连线、取值恢复 |
-| T-09 | 起线过程中再次点击菜单项 | §5.2 异常分支 | 提示且不产生半途状态 |
+| T-09 | 来源菜单中取消 | FR-3 | 无副作用，画布状态正常 |
 | T-10 | KSamplerAdvanced 的 advanced 参数 | FR-2 | 正常列出 |
-| T-11 | 无输入参数的节点 | FR-1 | 条目置灰 |
+| T-11 | 无输入参数的节点 | FR-1 | 条目不注入 |
 | T-12 | 断线 / 删除入参节点后重开菜单 | FR-6 | 状态标识回到"未外置" |
 | T-13 | 原生文件比对 | AC-10 | 无任何原生文件改动 |
-| T-14 | 仅用 FR-3b 来源菜单完成连线（屏蔽 FR-3a） | FR-3b、AC-11 | 独立可用 |
-| T-15 | 起线后落点在空白处 | FR-3a | 弹出原生来源菜单 |
+| T-14 | 来源菜单能力缺失（屏蔽 `showConnectionMenu`） | FR-3、§5.4.2 | 该组条目置灰并说明 |
+| T-15 | 来源菜单在空白区域的 Add Node / Search 分支 | FR-3 | 正常 |
 | T-16 | `socketless` 参数 / 子图节点 / 自定义 widget | FR-7、§6.1、AC-12 | 置灰且原因文案正确 |
 | T-17 | 制造合并钳制（范围不同的两个节点同名参数） | FR-7、AC-13 | 出现原因提示，非静默 |
 | T-18 | 合并被拒（INT 与 FLOAT / 范围无交集） | FR-7 | 改为新建节点并提示 |
@@ -452,11 +474,11 @@ node tests/run.mjs
 
 - **原理**：插件内部使用 `../../scripts/app.js` 这类相对路径导入前端模块。测试脚本在系统临时目录中还原出与浏览器一致的结构（`<sandbox>/scripts/app.js` + `<sandbox>/extensions/ComfyUI-BetterNode/`），因此**相对路径深度与真实运行时完全相同**，可顺带验证导入路径是否正确。
 - **已覆盖**：菜单结构与参数分类（FR-1/FR-2）、入参节点创建（FR-4）、复用与一对多（FR-5）、
-  参数状态标识（FR-6）、校验与提示级告警（FR-7）、起线降级链 FR-3a/FR-3b、
+  参数状态标识（FR-6）、校验与提示级告警（FR-7）、来源菜单调用与能力缺失降级（FR-3/§5.4.2）、
   置灰判定（FR-7 阻断级 / §6.1）、中英双语文案与字典键一致性（§5.9）、
-  链式挂载与其他扩展共存及异常隔离（§5.1）。当前 **32 项断言**。
+  链式挂载与其他扩展共存及异常隔离（§5.1）。当前 **29 项断言**。
 - **不覆盖**：真实画布渲染、原生 `PrimitiveNode` 的取值拷贝与下拉选项同步、
-  指针/拖拽的实际落点行为、`extensionManager.toast` 的真实可用性——
+  来源菜单的真实弹出与定位、`extensionManager.toast` 的真实可用性——
   这些仍需在 ComfyUI 中按 §9.1 手工验证。
 
 ---
@@ -473,9 +495,11 @@ node tests/run.mjs
 **仍开放**
 
 1. 是否将语义等价的参数（如 `seed` 与 `noise_seed`）纳入同一复用键？现方案按参数名严格匹配。
-2. 已连线的内部参数槽被点击时，目前行为是**在同一槽上追加一条连线**（由核心规则决定是否允许）；是否改为"先提示再替换"待定。
+2. 「合并被拒」提示在核心节点中难以构造复现场景，**尚未真实验证**（逻辑已有单元测试覆盖）。
+   若后续需要，可加一个仅控制台可用的调试入口来强制触发。
 3. 是否需要"一键外置该节点全部内部参数"的批量入口。
 4. 一个参数出现"共享节点 + 多个专用节点"时，菜单是否应展示更细的复用明细。
+5. 是否重新立项评估"拖拽式连线"（需自行实现输出槽命中判定，见 §5.4.1）。
 
 ---
 
@@ -485,7 +509,8 @@ node tests/run.mjs
 
 | 源文件 | 关键内容 |
 |---|---|
-| `src/lib/litegraph/src/LGraphCanvas.ts` | `:838` 指针对象创建；`:854-926` `dropped-on-canvas` 与来源菜单触发；`:2113` `_linkConnectorDrop`；`:2865-2874` 输入槽拖拽分支；`:6946` `showConnectionMenu`；`:8553` 画布菜单聚合；`:8646` `node.getExtraMenuOptions` 调用；`:8751` 节点菜单入口 |
+| `src/lib/litegraph/src/LGraphCanvas.ts` | `:838` 指针对象创建；`:854-926` `dropped-on-canvas` 与来源菜单触发；`:2113` `_linkConnectorDrop`；`:2284` `pointer.down`（`eDown` 的唯一来源）；`:2808-2820` 输出槽 mousedown 分支（无 `isConnecting` 判断）；`:2865-2874` 输入槽拖拽分支；`:3303` `pointer.move`；`:3851` `pointer.up`；`:3870+` 抬起处理；`:6946` `showConnectionMenu`；`:8553` 画布菜单聚合；`:8646` `node.getExtraMenuOptions` 调用；`:8751` 节点菜单入口 |
+| `src/lib/litegraph/src/CanvasPointer.ts` | `:188` `down()` 赋 `eDown`；`:199` `move()`（`!e.buttons` 即复位）；`:232` `up()`；`:241` `_completeClick()`（`!eDown` 直接返回）。**§5.4.1 根因所在** |
 | `src/lib/litegraph/src/linkConnector.ts` | `:412` `dragNewFromInput`；`moveInputLink`、`dragNewFromOutput`、`dropLinks`、`reset` |
 | `src/lib/litegraph/src/contextMenuCompat.ts` | 旧式 monkey-patch 兼容层与废弃告警 |
 | `src/extensions/core/widgetInputs.ts` | `:31` `PrimitiveNode` 定义（含 `_createWidget` 中值控制控件的添加条件）；`:509` `mergeIfValid`；`:519` `convertWidgetToInput` 废弃；`:564` `onInputDblClick` 范本 |

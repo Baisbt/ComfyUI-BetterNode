@@ -31,9 +31,8 @@ export const en = {
   "deny.locked": "this slot is locked",
   "deny.noSocket": "this parameter has no input slot and cannot be externalized",
   "deny.exoticWidget": "this parameter type cannot be auto-converted into an input node",
-  "deny.busy": "a link drag is already in progress; finish it or press Esc first",
-  "deny.dragUnsupported": "this frontend version does not support auto link-drag; please drag manually",
   "deny.noPrimitiveNode": "the built-in Primitive node was not found; cannot create an input node",
+  "deny.linkUnsupported": "this frontend version does not support linking from the menu; please drag a link onto the parameter manually",
 
   // Warnings (FR-7)
   "warn.valueClamped": "\"{name}\" had its range narrowed by the existing input node; value changed from {from} to {to}",
@@ -52,7 +51,6 @@ export const en = {
   // Errors (FR-7)
   "error.connectFailed": "failed to connect \"{name}\"; try dragging the link manually",
   "error.createFailed": "failed to create an input node for \"{name}\": {reason}",
-  "error.dragFailed": "failed to start link drag for \"{name}\": {reason}",
   "error.sourceMenuFailed": "failed to open the source menu for \"{name}\": {reason}",
 
   // Info (console only)
@@ -60,7 +58,6 @@ export const en = {
   "info.created": "created an input node for \"{name}\"",
   "info.reused": "reused the existing input node for \"{name}\"",
   "info.already": "\"{name}\" is already externalized; nothing to do",
-  "info.dragStarted": "link drag started; click a target output slot or press Esc to cancel",
   "info.channel": "notification channel: {channel}",
   "info.language": "language: {lang}",
 };

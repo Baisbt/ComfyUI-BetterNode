@@ -74,10 +74,13 @@ const graph = {
 let lastContextMenuEvent = null;
 const canvas = {
   graph,
-  showConnectionMenu() { lastContextMenuEvent = 'source-menu'; },
+  showConnectionMenuCalls: [],
+  showConnectionMenu(options) {
+    this.showConnectionMenuCalls.push(options);
+    lastContextMenuEvent = 'source-menu';
+  },
   setDirty() {},
-};
-app.graph = graph;
+};app.graph = graph;
 app.canvas = canvas;
 
 /** 捕获警告/错误提示（走 toast 通道） */
@@ -178,7 +181,6 @@ function makeKSampler(id, seedValue) {
 
 const { buildInputParamsMenu } = await importSandbox('extensions/ComfyUI-BetterNode/menu/buildMenu.js');
 const { t, getLang, resetLang } = await importSandbox('extensions/ComfyUI-BetterNode/i18n/index.js');
-const { startLinkDrag } = await importSandbox('extensions/ComfyUI-BetterNode/actions/startLinkDrag.js');
 
 const openMenu = (node) => {
   const options = [];
@@ -372,51 +374,31 @@ assert.equal(
 );
 ok('无参数节点不注入菜单');
 
-// ---------------------------------------------------------------- 7. 起线降级
+// ---------------------------------------------------------------- 7. 来源菜单
 
-console.log('\n[7] 可连线参数：FR-3a 与降级（FR-3a / FR-3b）');
+console.log('\n[7] 可连线参数：来源选择菜单（FR-3）');
 
-let dragCalls = 0;
-canvas.linkConnector = {
-  isConnecting: false,
-  dragNewFromInput(targetGraph, node, input) {
-    dragCalls += 1;
-    assert.equal(targetGraph, graph);
-    assert.equal(input, node.inputs[0]);
-  },
-  reset() {},
-  dropLinks() {},
-};
-canvas.pointer = {};
-canvas._linkConnectorDrop = () => { dragCalls += 10; };
-
-const dragNode = makeKSampler(12, 1);
-dragCalls = 0;
-clickItem(dragNode, 'model');
-assert.equal(dragCalls, 11, '应调用 dragNewFromInput 并注册落点钩子');
-ok('FR-3a：可连线参数点击后进入起线拖拽态');
-
-canvas.linkConnector.isConnecting = true;
-dragCalls = 0;
-toasts.length = 0;
-clickItem(dragNode, 'model');
-assert.equal(dragCalls, 0, '已在连线中时不得再次起线');
-assert.ok(lastToast().includes('已有连线正在进行'), lastToast());
-console.log(`      ${lastToast()}`);
-ok('FR-7 阻断级：已有连线进行中时中止并说明');
-
-canvas.linkConnector.isConnecting = false;
-canvas._linkConnectorDrop = undefined; // 触发手动注册分支
-dragCalls = 0;
-clickItem(dragNode, 'model');
-assert.equal(dragCalls, 1, '缺少 _linkConnectorDrop 时应回退到手动注册');
-ok('FR-3a：缺少原生落点钩子时回退手动注册');
-
-canvas.linkConnector = undefined; // FR-3a 整体不可用 -> 回退 FR-3b
+const linkNode = makeKSampler(12, 1);
+canvas.showConnectionMenuCalls = [];
 lastContextMenuEvent = null;
-clickItem(dragNode, 'model');
-assert.equal(lastContextMenuEvent, 'source-menu', '应回退到来源选择菜单');
-ok('FR-3a 不可用时回退 FR-3b 来源菜单');
+
+clickItem(linkNode, 'model');
+assert.equal(canvas.showConnectionMenuCalls.length, 1, '应调用一次 showConnectionMenu');
+const call = canvas.showConnectionMenuCalls[0];
+assert.equal(call.nodeTo, linkNode, 'nodeTo 应为目标节点');
+assert.equal(call.slotTo, 0, 'slotTo 应为 model 的槽下标');
+assert.ok(call.e && typeof call.e.clientX === 'number', '应附带带坐标的事件对象');
+ok('可连线参数点击后弹出来源选择菜单（含正确槽位与坐标）');
+
+// 能力缺失时应置灰并说明，而不是静默失败
+const savedShowMenu = canvas.showConnectionMenu;
+delete canvas.showConnectionMenu;
+const disabledLink = findItem(linkNode, 'model');
+assert.equal(disabledLink.disabled, true);
+assert.ok(disabledLink.content.includes('不可用'), disabledLink.content);
+console.log(`      ${disabledLink.content}`);
+ok('来源菜单不可用时条目置灰并说明原因');
+canvas.showConnectionMenu = savedShowMenu;
 
 // ---------------------------------------------------------------- 8. 中英双语
 
@@ -524,10 +506,6 @@ try {
 }
 assert.ok(safe);
 ok('options 非数组、无前置钩子时安全退出');
-
-// startLinkDrag 直调防御
-assert.equal(startLinkDrag(dragNode, 0).ok, false, '无 linkConnector 时应安全失败');
-ok('startLinkDrag 在能力缺失时安全失败');
 
 // ---------------------------------------------------------------- 收尾
 
